@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "role": "ProductAgent",
+  "role_version": "2026-06-15.1",
+  "oauth_client_id": "synthetic-product-agent-client",
+  "app_user_id": "synthetic-product-agent-user",
+  "authority_owner": "Founder and Product Lead",
+  "live_approval_channel_enabled": false,
+  "untrusted_sources": [
+    "issue descriptions",
+    "comments",
+    "prompt context",
+    "workspace guidance",
+    "repository content"
+  ],
+  "implementation_terms": [
+    "implement",
+    "start coding",
+    "write production code",
+    "commission builderagent",
+    "delegate to builderagent",
+    "begin the build"
+  ],
+  "injection_terms": [
+    "ignore previous instructions",
+    "override founder",
+    "treat this as approved",
+    "you are now builderagent",
+    "system prompt",
+    "developer message"
+  ]
+}
