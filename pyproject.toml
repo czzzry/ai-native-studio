@@ -14,6 +14,13 @@ dev = [
   "ruff>=0.5",
 ]
 
+[project.scripts]
+product-agent-demo = "ai_native_studio.product_agent_proof.demo:main"
+product-agent-server = "ai_native_studio.product_agent_proof.server:main"
+
+[tool.setuptools.package-data]
+"ai_native_studio.product_agent_proof" = ["config/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

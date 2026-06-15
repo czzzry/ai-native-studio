@@ -2,7 +2,9 @@
 
 AI-native product-development operating system for a solo founder.
 
-The first pilot product is a permissioned personal email agent for Gmail. This repository currently contains the operating model, product specifications, safety boundaries, evaluation plan, architecture, and staged implementation plan. It intentionally does not contain a working Gmail integration or production email agent yet.
+The first pilot product is a permissioned personal email agent for Gmail. This repository contains
+the operating model, product specifications, safety boundaries, and a runnable local ProductAgent
+proof. It intentionally does not contain a working Gmail integration or production email agent yet.
 
 ## Operating Model
 
@@ -52,10 +54,22 @@ Initial releases exclude autonomous email sending, permanent deletion, autonomou
 
 ## Current Status
 
-Foundation and design artifacts only. See:
+The studio constitution is defined and Phase 2A provides an executable ProductAgent webhook proof
+using synthetic Linear events only.
+
+Run the complete demonstration after creating the local environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/product-agent-demo
+```
+
+See:
 
 - `company/` for charter and operating rules.
 - `agents/` for role contracts.
 - `workflows/` for feature lifecycle.
+- `products/studio_agents/` for ProductAgent proof documentation and limitations.
 - `products/email_agent/` for product specifications.
 - `evals/email_agent/` for evaluation fixtures and results placeholders.
