@@ -71,6 +71,20 @@ def test_firestore_receipts_survive_reinstantiation_and_reject_replays() -> None
     assert second.reserve("hook-1", "payload-b", 1_700_000_000_002) is ReceiptResult.CONFLICT
 
 
+def test_firestore_receipt_release_allows_retry_of_same_payload() -> None:
+    backend: dict[tuple[str, str], dict[str, object]] = {}
+    store = FirestoreWebhookReceiptStore(
+        InMemoryDocumentStore(backend),
+        collection="product_agent_live_webhook_receipts",
+    )
+
+    assert store.reserve("hook-1", "payload-a", 1_700_000_000_000) is ReceiptResult.NEW
+
+    store.release("hook-1", "payload-a")
+
+    assert store.reserve("hook-1", "payload-a", 1_700_000_000_001) is ReceiptResult.NEW
+
+
 def test_firestore_approval_ledger_survives_reinstantiation() -> None:
     backend: dict[tuple[str, str], dict[str, object]] = {}
     role = load_product_agent_role()

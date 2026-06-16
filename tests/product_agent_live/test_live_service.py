@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ai_native_studio.product_agent_live.activity_format import format_response
 from ai_native_studio.product_agent_live.config import LiveProductAgentConfig
-from ai_native_studio.product_agent_live.linear_api import LinearAuthError
+from ai_native_studio.product_agent_live.linear_api import LinearAPIError, LinearAuthError
 from ai_native_studio.product_agent_live.models import StoredInstallation
 from ai_native_studio.product_agent_live.server import _not_configured_payload
 from ai_native_studio.product_agent_live.service import LiveProductAgentService
@@ -89,6 +89,24 @@ class RefreshThenRecordClient(RecordingGraphClient):
         super().create_agent_activity(session_id, content, ephemeral=ephemeral)
 
 
+class FailThenRecoverClient(RecordingGraphClient):
+    def __init__(self, access_token: str, shared_state: dict[str, bool]) -> None:
+        super().__init__(access_token)
+        self._shared_state = shared_state
+
+    def create_agent_activity(
+        self,
+        session_id: str,
+        content: dict[str, object],
+        *,
+        ephemeral: bool = False,
+    ) -> None:
+        if not self._shared_state["failed"]:
+            self._shared_state["failed"] = True
+            raise LinearAPIError("Linear GraphQL request failed with HTTP 400.")
+        super().create_agent_activity(session_id, content, ephemeral=ephemeral)
+
+
 def config(tmp_path: Path) -> LiveProductAgentConfig:
     return LiveProductAgentConfig(
         app_env="test",
@@ -159,6 +177,32 @@ def event_payload() -> dict[str, object]:
             "comment": {"id": "comment-1", "body": "@ProductAgent please help"},
             "promptContext": "Synthetic prompt context",
             "guidance": ["Use the founder-led product contract."],
+        },
+    }
+
+
+def second_retry_event_payload() -> dict[str, object]:
+    return {
+        "type": "AgentSessionEvent",
+        "action": "created",
+        "webhookId": "62485b93-8902-4c54-825e-771aae306ccf",
+        "webhookTimestamp": 1_781_558_354_576,
+        "oauthClientId": "client-123",
+        "appUserId": "5ad9357e-9f6b-4395-91ea-d5a14783bcc6",
+        "agentSession": {
+            "id": "b2c859d1-cd12-465d-9e47-f5f07321f26e",
+            "issue": {
+                "id": "issue-pro-1",
+                "identifier": "PRO-1",
+                "title": "Synthetic live retry regression",
+                "description": "Retry the exact agent session after a previously failed publish.",
+            },
+            "comment": {"id": "comment-pro-1", "body": "@ProductAgent please retry"},
+            "promptContext": "Synthetic prompt context for the retried live agent session.",
+            "guidance": ["Use the founder-led product contract."],
+            "previousComments": [
+                {"id": "thread-1", "body": "Please investigate the earlier failure."}
+            ],
         },
     }
 
@@ -394,12 +438,60 @@ def test_webhook_rejects_installation_missing_write_scope_before_activity_publis
     assert result.status == "rejected"
     assert result.code == "installation_scope_incomplete"
     assert clients == []
-    duplicate = service.handle_webhook(
+    retry = service.handle_webhook(
         body,
         {"Linear-Signature": create_signature(b"webhook-secret", body)},
         now_ms=1_700_000_000_001,
     )
-    assert duplicate.code == "duplicate_event"
+    assert retry.code == "installation_scope_incomplete"
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_webhook_allows_retry_after_live_publish_failure_for_same_event(tmp_path: Path) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    shared_state = {"failed": False}
+    clients: list[FailThenRecoverClient] = []
+
+    def factory(access_token: str) -> FailThenRecoverClient:
+        client = FailThenRecoverClient(access_token, shared_state)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=DeterministicFakeProductModel(),
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    body = json.dumps(second_retry_event_payload()).encode("utf-8")
+    headers = {"Linear-Signature": create_signature(b"webhook-secret", body)}
+
+    first = service.handle_webhook(body, headers, now_ms=1_781_558_354_576)
+    second = service.handle_webhook(body, headers, now_ms=1_781_558_354_577)
+
+    assert first.status == "rejected"
+    assert first.code == "linear_api_error"
+    assert second.status == "accepted"
+    assert len(clients) == 2
+    assert clients[1].activities[0][0] == "b2c859d1-cd12-465d-9e47-f5f07321f26e"
+    assert clients[1].activities[0][1]["type"] == "thought"
+    assert clients[1].activities[1][1]["type"] == "response"
     installation_store.close()
     receipt_store.close()
 
