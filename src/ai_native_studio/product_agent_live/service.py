@@ -127,6 +127,7 @@ class LiveProductAgentService:
         *,
         now_ms: int,
     ) -> WebhookProcessResult:
+        payload_sha256 = hashlib.sha256(raw_body).hexdigest()
         if not self._config.webhook_secret:
             return self._reject(
                 "not_configured",
@@ -148,20 +149,6 @@ class LiveProductAgentService:
             )
         except WebhookSecurityError as error:
             return self._reject(error.code, str(error), 401)
-
-        receipt = self._receipt_store.reserve(
-            event.webhook_id,
-            hashlib.sha256(raw_body).hexdigest(),
-            now_ms,
-        )
-        if receipt is ReceiptResult.DUPLICATE:
-            return self._reject("duplicate_event", "This webhookId was already processed.", 409)
-        if receipt is ReceiptResult.CONFLICT:
-            return self._reject(
-                "replay_conflict",
-                "This webhookId was reused with a different payload.",
-                409,
-            )
 
         if event.oauth_client_id != self._config.oauth_client_id:
             return self._reject(
@@ -210,9 +197,20 @@ class LiveProductAgentService:
                 503,
             )
 
+        receipt = self._receipt_store.reserve(event.webhook_id, payload_sha256, now_ms)
+        if receipt is ReceiptResult.DUPLICATE:
+            return self._reject("duplicate_event", "This webhookId was already processed.", 409)
+        if receipt is ReceiptResult.CONFLICT:
+            return self._reject(
+                "replay_conflict",
+                "This webhookId was reused with a different payload.",
+                409,
+            )
+
         try:
             self._respond_to_session(event, installation)
         except LinearAPIError as error:
+            self._receipt_store.release(event.webhook_id, payload_sha256)
             log_event("linear_response_failed", error=str(error), session_id=event.agent_session.id)
             return self._reject("linear_api_error", str(error), 502)
 

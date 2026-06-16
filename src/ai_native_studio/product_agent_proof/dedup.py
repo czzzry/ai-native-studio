@@ -48,5 +48,18 @@ class WebhookReceiptStore:
             return ReceiptResult.DUPLICATE
         return ReceiptResult.CONFLICT
 
+    def release(self, webhook_id: str, payload_sha256: str) -> None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload_sha256 FROM webhook_receipts WHERE webhook_id = ?",
+                (webhook_id,),
+            ).fetchone()
+            if row and row[0] == payload_sha256:
+                self._connection.execute(
+                    "DELETE FROM webhook_receipts WHERE webhook_id = ?",
+                    (webhook_id,),
+                )
+                self._connection.commit()
+
     def close(self) -> None:
         self._connection.close()

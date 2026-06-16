@@ -42,6 +42,8 @@ class ReceiptStoreProtocol(Protocol):
         self, webhook_id: str, payload_sha256: str, received_at_ms: int
     ) -> ReceiptResult: ...
 
+    def release(self, webhook_id: str, payload_sha256: str) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -298,6 +300,11 @@ class FirestoreWebhookReceiptStore:
         if existing and existing["payload_sha256"] == payload_sha256:
             return ReceiptResult.DUPLICATE
         return ReceiptResult.CONFLICT
+
+    def release(self, webhook_id: str, payload_sha256: str) -> None:
+        existing = self._document_store.get_document(self._collection, webhook_id)
+        if existing and existing["payload_sha256"] == payload_sha256:
+            self._document_store.delete_document(self._collection, webhook_id)
 
     def close(self) -> None:
         self._document_store.close()
