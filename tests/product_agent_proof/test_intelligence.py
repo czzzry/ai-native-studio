@@ -4,7 +4,7 @@ import json
 
 import httpx
 import pytest
-from openai import APITimeoutError, RateLimitError
+from openai import APITimeoutError, BadRequestError, RateLimitError
 
 from ai_native_studio.product_agent_proof.approval import (
     SyntheticApprovalRequest,
@@ -16,7 +16,11 @@ from ai_native_studio.product_agent_proof.intelligence import (
     ModelOutputValidationError,
     ProductAgentIntelligence,
 )
-from ai_native_studio.product_agent_proof.models import ModelGeneration, ModelRequest
+from ai_native_studio.product_agent_proof.models import (
+    ModelGeneration,
+    ModelRequest,
+    ProductAdvisory,
+)
 from ai_native_studio.product_agent_proof.providers import (
     DeterministicFakeProductModel,
     MalformedFakeProductModel,
@@ -38,10 +42,22 @@ def intelligence(model=None) -> ProductAgentIntelligence:
 
 
 class StubResponseUsage:
-    def __init__(self, input_tokens: int, output_tokens: int, total_tokens: int) -> None:
+    def __init__(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        *,
+        reasoning_tokens: int | None = None,
+    ) -> None:
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
         self.total_tokens = total_tokens
+        self.output_tokens_details = type(
+            "OutputTokensDetails",
+            (),
+            {"reasoning_tokens": reasoning_tokens},
+        )()
 
 
 class StubOutputPart:
@@ -49,21 +65,55 @@ class StubOutputPart:
         self.type = "output_text"
         self.text = text
 
+    def to_dict(self) -> dict[str, object]:
+        return {"type": self.type, "text": self.text}
+
 
 class StubOutputItem:
     def __init__(self, text: str) -> None:
+        self.type = "message"
         self.content = [StubOutputPart(text)]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"type": self.type, "content": [part.to_dict() for part in self.content]}
 
 
 class StubResponse:
-    def __init__(self, text: str, *, input_tokens: int = 120, output_tokens: int = 80) -> None:
+    def __init__(
+        self,
+        text: str,
+        *,
+        input_tokens: int = 120,
+        output_tokens: int = 80,
+        reasoning_tokens: int | None = 0,
+        status: str = "completed",
+        incomplete_reason: str | None = None,
+    ) -> None:
         self.output_text = text
         self.output = [StubOutputItem(text)]
         self.usage = StubResponseUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
+            reasoning_tokens=reasoning_tokens,
         )
+        self.output_parsed = None
+        self.status = status
+        self.incomplete_details = (
+            None
+            if incomplete_reason is None
+            else type("IncompleteDetails", (), {"reason": incomplete_reason})()
+        )
+        try:
+            self.output_parsed = ProductAdvisory.model_validate_json(text)
+        except Exception:
+            self.output_parsed = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "output": [item.to_dict() for item in self.output],
+        }
 
 
 class StubResponsesClient:
@@ -77,6 +127,19 @@ class StubResponsesClient:
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        return outcome
+
+    def parse(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        text_format = kwargs.get("text_format")
+        if isinstance(outcome, StubResponse) and isinstance(text_format, type):
+            try:
+                outcome.output_parsed = text_format.model_validate_json(outcome.output_text)
+            except Exception:
+                outcome.output_parsed = None
         return outcome
 
 
@@ -93,6 +156,29 @@ def make_rate_limit_error() -> Exception:
         "rate limit",
         response=response,
         body=None,
+    )
+
+
+def make_bad_request_error() -> Exception:
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://api.openai.com/v1/responses"),
+        headers={"x-request-id": "req_test_123"},
+    )
+    return BadRequestError(
+        "bad request",
+        response=response,
+        body={
+            "error": {
+                "message": (
+                    "Invalid schema for response_format 'product_agent_advisory': "
+                    "Missing 'approved_decisions'."
+                ),
+                "type": "invalid_request_error",
+                "param": "text.format.schema",
+                "code": "invalid_json_schema",
+            }
+        },
     )
 
 
@@ -411,7 +497,7 @@ def test_openai_provider_rejects_invalid_structured_output(monkeypatch) -> None:
         intelligence(model).advise("A bounded manual test.")
 
 
-def test_openai_provider_uses_json_schema_aliases_in_request(monkeypatch) -> None:
+def test_openai_provider_uses_typed_parse_request(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     client = StubResponsesClient(
         [
@@ -440,9 +526,9 @@ def test_openai_provider_uses_json_schema_aliases_in_request(monkeypatch) -> Non
         )
     )
 
-    schema = client.calls[0]["text"]["format"]["schema"]
-    assert "current_understanding" in schema["properties"]
-    assert "smallest_useful_scope" in schema["properties"]
+    assert client.calls[0]["text"]["format"]["type"] == "json_schema"
+    assert client.calls[0]["store"] is False
+    assert client.calls[0]["reasoning"]["effort"] == "low"
 
 
 def test_openai_provider_retries_timeout_once_then_succeeds(monkeypatch) -> None:
@@ -504,6 +590,138 @@ def test_openai_provider_raises_retryable_rate_limit_after_budget_exhausted(monk
 
     assert len(client.calls) == 2
     assert sleeps == [0.5]
+
+
+def test_openai_provider_surfaces_safe_bad_request_details(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = StubResponsesClient([make_bad_request_error()])
+    model = OpenAIResponsesProductModel(
+        model="gpt-5.4-mini",
+        pricing=ModelPricing(0.75, 4.5),
+        client_factory=lambda api_key, timeout: client,
+        max_retries=0,
+    )
+
+    with pytest.raises(ProviderRuntimeError) as caught:
+        model.generate(
+            ModelRequest(
+                prompt_version="test",
+                system_prompt="Return the schema.",
+                untrusted_product_input="A bounded manual test.",
+            )
+        )
+
+    error = caught.value
+    assert error.category == "provider_rejected"
+    assert error.status_code == 400
+    assert error.error_type == "invalid_request_error"
+    assert error.error_code == "invalid_json_schema"
+    assert error.invalid_param == "text.format.schema"
+    assert error.request_id == "req_test_123"
+    assert "param=text.format.schema" in str(error)
+    assert "code=invalid_json_schema" in str(error)
+
+
+def test_openai_provider_retries_once_after_max_output_incomplete(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    completed = StubResponse(
+        DeterministicFakeProductModel()
+        .generate(
+            ModelRequest(
+                prompt_version="test",
+                system_prompt="Return the schema.",
+                untrusted_product_input="A bounded manual test.",
+            )
+        )
+        .raw_output,
+        output_tokens=420,
+    )
+    client = StubResponsesClient(
+        [
+            StubResponse(
+                '{"current_understanding":"partial',
+                output_tokens=300,
+                status="incomplete",
+                incomplete_reason="max_output_tokens",
+            ),
+            completed,
+        ]
+    )
+    sleeps: list[float] = []
+    model = OpenAIResponsesProductModel(
+        model="gpt-5.4-mini",
+        pricing=ModelPricing(0.75, 4.5),
+        client_factory=lambda api_key, timeout: client,
+        max_output_tokens=300,
+        max_retries=1,
+        sleep=sleeps.append,
+    )
+
+    result = model.generate(
+        ModelRequest(
+            prompt_version="test",
+            system_prompt="Return the schema.",
+            untrusted_product_input="A bounded manual test.",
+        )
+    )
+
+    assert result.usage.output_tokens == 420
+    assert len(client.calls) == 2
+    assert client.calls[1]["max_output_tokens"] == 1500
+    assert sleeps == [0.5]
+
+
+def test_openai_provider_rejects_incomplete_structured_output_without_retry_budget(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = StubResponsesClient(
+        [
+            StubResponse(
+                '{"current_understanding":"partial',
+                output_tokens=300,
+                reasoning_tokens=0,
+                status="incomplete",
+                incomplete_reason="max_output_tokens",
+            )
+        ]
+    )
+    model = OpenAIResponsesProductModel(
+        model="gpt-5.4-mini",
+        pricing=ModelPricing(0.75, 4.5),
+        client_factory=lambda api_key, timeout: client,
+        max_output_tokens=300,
+        max_retries=0,
+    )
+
+    with pytest.raises(ProviderRuntimeError) as caught:
+        model.generate(
+            ModelRequest(
+                prompt_version="test",
+                system_prompt="Return the schema.",
+                untrusted_product_input="A bounded manual test.",
+            )
+        )
+
+    error = caught.value
+    assert error.category == "incomplete_response"
+    assert error.incomplete_reason == "max_output_tokens"
+    assert error.output_tokens == 300
+
+
+def test_openai_provider_does_not_accept_truncated_json_even_if_status_completed(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = StubResponsesClient([StubResponse('{"current_understanding":"partial')])
+    model = OpenAIResponsesProductModel(
+        model="gpt-5.4-mini",
+        pricing=ModelPricing(0.75, 4.5),
+        client_factory=lambda api_key, timeout: client,
+    )
+
+    with pytest.raises(ModelOutputValidationError, match="Model output rejected"):
+        intelligence(model).advise("A bounded manual test.")
 
 
 def test_founder_briefing_is_complete_in_advisory_output() -> None:

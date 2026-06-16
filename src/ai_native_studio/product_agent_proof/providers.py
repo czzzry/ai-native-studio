@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
+from openai.lib._parsing._responses import parse_response, type_to_text_format_param
+from pydantic import ValidationError
 
 from .intelligence import IntelligenceError
 from .models import (
@@ -358,10 +360,38 @@ OPENAI_MODEL_PRICING: dict[str, ModelPricing] = {
 class ProviderRuntimeError(IntelligenceError):
     """Provider failure with a redaction-safe category for logging and user fallbacks."""
 
-    def __init__(self, message: str, *, category: str, retryable: bool) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str,
+        retryable: bool,
+        status_code: int | None = None,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        invalid_param: str | None = None,
+        request_id: str | None = None,
+        response_status: str | None = None,
+        incomplete_reason: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.category = category
         self.retryable = retryable
+        self.status_code = status_code
+        self.error_type = error_type
+        self.error_code = error_code
+        self.invalid_param = invalid_param
+        self.request_id = request_id
+        self.response_status = response_status
+        self.incomplete_reason = incomplete_reason
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.total_tokens = total_tokens
+        self.reasoning_tokens = reasoning_tokens
 
 
 class OpenAIResponsesProductModel:
@@ -378,6 +408,7 @@ class OpenAIResponsesProductModel:
         max_output_tokens: int = 1800,
         timeout_seconds: int = 20,
         max_retries: int = 2,
+        reasoning_effort: str = "low",
         client_factory: Callable[[str, float], Any] | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -387,6 +418,7 @@ class OpenAIResponsesProductModel:
         self._max_output_tokens = max_output_tokens
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
+        self._reasoning_effort = reasoning_effort
         self._client_factory = client_factory or self._default_client_factory
         self._sleep = sleep
 
@@ -401,7 +433,7 @@ class OpenAIResponsesProductModel:
                 f"{self._api_key_environment_variable} is not available for ProductAgent."
             )
         client = self._client_factory(api_key, float(self._timeout_seconds))
-        response = self._invoke_with_retries(client, self._request_body(request))
+        response = self._invoke_with_retries(client, self._request_kwargs(request))
 
         raw_output = self._extract_output_text(response)
         usage_payload = self._extract_usage(response)
@@ -423,18 +455,27 @@ class OpenAIResponsesProductModel:
         )
 
     def estimated_preflight_cost(self, request: ModelRequest) -> float:
-        serialized_request = json.dumps(self._request_body(request), separators=(",", ":"))
+        serialized_request = json.dumps(
+            {
+                **self._request_kwargs(request),
+                "text": {
+                    "format": type_to_text_format_param(ProductAdvisory),
+                },
+            },
+            separators=(",", ":"),
+        )
         approximate_input_tokens = max(1, len(serialized_request) // 4)
         return self._estimate_cost(approximate_input_tokens, self._max_output_tokens)
 
-    def _request_body(self, request: ModelRequest) -> dict[str, object]:
+    def _request_kwargs(self, request: ModelRequest) -> dict[str, object]:
         untrusted_input = json.dumps(
             {"untrusted_product_input": request.untrusted_product_input},
             ensure_ascii=True,
         )
         return {
             "model": self._model,
-            "instructions": request.system_prompt,
+            "instructions": request.system_prompt
+            + "\n\nBe concise. Keep each list short and decision-focused.",
             "input": [
                 {
                     "role": "user",
@@ -450,25 +491,55 @@ class OpenAIResponsesProductModel:
                 }
             ],
             "max_output_tokens": self._max_output_tokens,
+            "reasoning": {"effort": self._reasoning_effort},
             "store": False,
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "product_agent_advisory",
-                    "strict": True,
-                    "schema": ProductAdvisory.model_json_schema(
-                        by_alias=True,
-                        mode="serialization",
-                    ),
-                }
-            },
         }
 
-    def _invoke_with_retries(self, client: Any, body: dict[str, object]) -> Any:
+    def _invoke_with_retries(self, client: Any, request_kwargs: dict[str, object]) -> Any:
         attempts = self._max_retries + 1
         for attempt in range(1, attempts + 1):
             try:
-                return client.responses.create(**body)
+                raw_response = client.responses.create(
+                    **{
+                        **request_kwargs,
+                        "text": {"format": type_to_text_format_param(ProductAdvisory)},
+                    }
+                )
+                if getattr(raw_response, "status", None) == "incomplete":
+                    details = self._response_metadata(raw_response)
+                    if (
+                        details["incomplete_reason"] == "max_output_tokens"
+                        and attempt < attempts
+                    ):
+                        self._sleep(0.5 * attempt)
+                        request_kwargs = {
+                            **request_kwargs,
+                            "max_output_tokens": int(request_kwargs["max_output_tokens"]) + 1200,
+                        }
+                        continue
+                    raise ProviderRuntimeError(
+                        self._safe_incomplete_message(details),
+                        category="incomplete_response",
+                        retryable=False,
+                        response_status=details["status"],
+                        incomplete_reason=details["incomplete_reason"],
+                        input_tokens=details["input_tokens"],
+                        output_tokens=details["output_tokens"],
+                        total_tokens=details["total_tokens"],
+                        reasoning_tokens=details["reasoning_tokens"],
+                    )
+                parsed = getattr(raw_response, "output_parsed", None)
+                if isinstance(parsed, ProductAdvisory):
+                    return raw_response
+                try:
+                    parsed_response = parse_response(
+                        text_format=ProductAdvisory,
+                        input_tools=None,
+                        response=raw_response,
+                    )
+                except ValidationError:
+                    return raw_response
+                return parsed_response
             except RateLimitError as error:
                 if attempt >= attempts:
                     raise ProviderRuntimeError(
@@ -494,11 +565,19 @@ class OpenAIResponsesProductModel:
                     if error.status_code >= 500
                     else "provider_rejected"
                 )
+                details = self._safe_api_error_details(error)
                 raise ProviderRuntimeError(
-                    f"OpenAI Responses API returned HTTP {error.status_code}.",
+                    self._safe_api_error_message(error, details),
                     category=category,
                     retryable=error.status_code >= 500,
+                    status_code=error.status_code,
+                    error_type=details["error_type"],
+                    error_code=details["error_code"],
+                    invalid_param=details["invalid_param"],
+                    request_id=details["request_id"],
                 ) from error
+            except ProviderRuntimeError:
+                raise
             except Exception as error:
                 raise ProviderRuntimeError(
                     "OpenAI returned an unexpected ProductAgent provider failure.",
@@ -518,6 +597,10 @@ class OpenAIResponsesProductModel:
 
     @staticmethod
     def _extract_output_text(response: Any) -> str:
+        parsed = getattr(response, "output_parsed", None)
+        if isinstance(parsed, ProductAdvisory):
+            return parsed.model_dump_json(by_alias=True)
+
         direct = getattr(response, "output_text", None)
         if isinstance(direct, str) and direct:
             return direct
@@ -532,6 +615,80 @@ class OpenAIResponsesProductModel:
                         if isinstance(text, str) and text:
                             return text
         raise IntelligenceError("OpenAI response contained no structured output text.")
+
+    @staticmethod
+    def _safe_api_error_details(error: APIStatusError) -> dict[str, str | None]:
+        error_type = None
+        error_code = None
+        invalid_param = None
+        sanitized_message = None
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            payload = body.get("error") if isinstance(body.get("error"), dict) else body
+            if isinstance(payload, dict):
+                error_type = payload.get("type")
+                error_code = payload.get("code")
+                invalid_param = payload.get("param")
+                message = payload.get("message")
+                if isinstance(message, str):
+                    sanitized_message = message[:300]
+        return {
+            "error_type": error_type,
+            "error_code": error_code,
+            "invalid_param": invalid_param,
+            "request_id": getattr(error, "request_id", None),
+            "message": sanitized_message,
+        }
+
+    @staticmethod
+    def _safe_api_error_message(
+        error: APIStatusError,
+        details: dict[str, str | None],
+    ) -> str:
+        parts = [f"OpenAI Responses API returned HTTP {error.status_code}"]
+        if details["error_type"]:
+            parts.append(f"type={details['error_type']}")
+        if details["error_code"]:
+            parts.append(f"code={details['error_code']}")
+        if details["invalid_param"]:
+            parts.append(f"param={details['invalid_param']}")
+        if details["request_id"]:
+            parts.append(f"request_id={details['request_id']}")
+        message = details["message"]
+        if message:
+            parts.append(message)
+        return parts[0] + (" (" + ", ".join(parts[1:]) + ")" if len(parts) > 1 else "")
+
+    @staticmethod
+    def _response_metadata(response: Any) -> dict[str, int | str | None]:
+        usage = getattr(response, "usage", None)
+        output_tokens_details = getattr(usage, "output_tokens_details", None) if usage else None
+        incomplete = getattr(response, "incomplete_details", None)
+        return {
+            "status": getattr(response, "status", None),
+            "incomplete_reason": getattr(incomplete, "reason", None) if incomplete else None,
+            "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
+            "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
+            "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
+            "reasoning_tokens": (
+                getattr(output_tokens_details, "reasoning_tokens", None)
+                if output_tokens_details
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _safe_incomplete_message(details: dict[str, int | str | None]) -> str:
+        parts = ["OpenAI returned an incomplete structured response"]
+        if details["status"]:
+            parts.append(f"status={details['status']}")
+        if details["incomplete_reason"]:
+            parts.append(f"reason={details['incomplete_reason']}")
+        if details["output_tokens"] is not None:
+            parts.append(f"output_tokens={details['output_tokens']}")
+        if details["reasoning_tokens"] is not None:
+            parts.append(f"reasoning_tokens={details['reasoning_tokens']}")
+        return parts[0] + (" (" + ", ".join(parts[1:]) + ")" if len(parts) > 1 else "")
 
     @staticmethod
     def _extract_usage(response: Any) -> dict[str, int | None]:
