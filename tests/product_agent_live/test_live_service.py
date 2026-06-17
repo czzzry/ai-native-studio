@@ -843,7 +843,7 @@ def test_thread_starter_prompt_uses_latest_issue_comment_when_session_comment_is
     payload["action"] = "created"
     payload["agentSession"]["comment"] = {
         "id": "comment-root",
-        "body": "@ProductAgent Please ideate with me on a Gmail email agent. Do not implement.",
+        "body": "This thread is for an agent session with productagent.",
     }
     payload["agentSession"]["previousComments"] = [
         {
@@ -875,6 +875,88 @@ def test_thread_starter_prompt_uses_latest_issue_comment_when_session_comment_is
         "replaying the earlier checklist."
         in response_body
     )
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_created_spec_request_prefers_current_comment_over_stale_issue_comment(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(
+            access_token,
+            issue_comments=[
+                {
+                    "id": "comment-stale-1",
+                    "body": "I want a personal Gmail triage agent.",
+                    "user": {"id": "founder-1"},
+                    "createdAt": "2026-06-17T14:20:01Z",
+                },
+                {
+                    "id": "comment-stale-2",
+                    "body": "Gmail is the first provider and I am the first user.",
+                    "user": {"id": "founder-1"},
+                    "createdAt": "2026-06-17T14:20:02Z",
+                },
+            ],
+        )
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=DeterministicFakeProductModel(),
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-current-comment-beats-stale-issue-comment"
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent Can you give me a spec I can approve?"
+    )
+    payload["agentSession"]["previousComments"] = [
+        {
+            "id": "comment-founder-1",
+            "body": "Just me, Gmail first, triage first.",
+            "userId": "founder-1",
+            "createdAt": "2026-06-17T14:19:58Z",
+        }
+    ]
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_650,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].activities[-1][1]["body"].startswith(
+        "Request received\n> @ProductAgent Can you give me a spec I can approve?"
+    )
+    assert "created a versioned Product Brief" in clients[0].activities[-1][1]["body"]
+    assert "APPROVE SPEC brief-pst-1-v1" in clients[0].activities[-1][1]["body"]
+    assert len(product_brief_store.list_versions("brief-pst-1")) == 1
     installation_store.close()
     receipt_store.close()
 

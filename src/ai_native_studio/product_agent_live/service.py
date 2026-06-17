@@ -923,20 +923,21 @@ class LiveProductAgentService:
                 instruction = comment.body.strip()
                 source_type = "comment"
                 source_comment_id = comment.id
-                latest_issue_comment = self._latest_issue_human_comment(event, client)
-                if latest_issue_comment is not None and latest_issue_comment.id != comment.id:
-                    latest_issue_comment_instruction = self._activity_instruction(
-                        latest_issue_comment
-                    )
-                    if latest_issue_comment_instruction:
-                        instruction = latest_issue_comment_instruction
-                        source_comment_id = latest_issue_comment.id
-                        actor_id = (
-                            self._extract_actor_id_from_comment(latest_issue_comment) or actor_id
-                        )
                 if self._looks_like_thread_starter(instruction) or self._looks_like_boilerplate(
                     instruction
                 ):
+                    latest_issue_comment = self._latest_issue_human_comment(event, client)
+                    if latest_issue_comment is not None and latest_issue_comment.id != comment.id:
+                        latest_issue_comment_instruction = self._activity_instruction(
+                            latest_issue_comment
+                        )
+                        if latest_issue_comment_instruction:
+                            instruction = latest_issue_comment_instruction
+                            source_comment_id = latest_issue_comment.id
+                            actor_id = (
+                                self._extract_actor_id_from_comment(latest_issue_comment)
+                                or actor_id
+                            )
                     latest_previous = self._latest_previous_human_comment(
                         session.previous_comments,
                         event.app_user_id,
