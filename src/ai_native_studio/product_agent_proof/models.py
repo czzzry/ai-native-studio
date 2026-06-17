@@ -29,6 +29,10 @@ class AgentSession(StrictModel):
     comment: LinearComment | None = None
     prompt_context: str = Field(default="", alias="promptContext")
     guidance: list[str] = Field(default_factory=list)
+    previous_comments: list[LinearComment] = Field(
+        default_factory=list,
+        alias="previousComments",
+    )
     repository_content: list[str] = Field(default_factory=list, alias="repositoryContent")
 
 

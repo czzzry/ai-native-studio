@@ -587,6 +587,14 @@ class LiveProductAgentService:
                 ),
                 promptContext=session.prompt_context,
                 guidance=[str(item) for item in session.guidance],
+                previousComments=[
+                    LinearComment(
+                        id=comment.id,
+                        body=comment.body,
+                    )
+                    for comment in session.previous_comments
+                    if comment.body
+                ],
                 repositoryContent=[],
             ),
         )

@@ -75,6 +75,7 @@ class ProductAgentPolicy:
             session.issue.description,
             session.prompt_context,
             *(session.guidance),
+            *(comment.body for comment in session.previous_comments if comment.body),
             *(session.repository_content),
         ]
         if session.comment:
