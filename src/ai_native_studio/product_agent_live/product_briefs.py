@@ -10,6 +10,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ai_native_studio.product_agent_proof.conversation_state import ConversationDecisionLedger
 from ai_native_studio.product_agent_proof.intelligence import IntelligenceError
 from ai_native_studio.product_agent_proof.models import ModelGeneration, ModelRequest, ModelUsage
 from ai_native_studio.product_agent_proof.providers import (
@@ -19,8 +20,10 @@ from ai_native_studio.product_agent_proof.providers import (
 
 PRODUCT_BRIEF_REQUEST_PATTERNS = (
     re.compile(r"(?is)\bcreate\b.*\bversioned\b.*\bproduct brief\b"),
+    re.compile(r"(?is)\bdecide\b.*\bgive me\b.*\bspec\b"),
     re.compile(r"(?is)\bwhat\s+spec\s+do you have\s+for\s+(?:this|it)\b"),
     re.compile(r"(?is)\bwhat(?:'s| is)?\s+the\s+spec\b"),
+    re.compile(r"(?is)\bgive me (?:a|the)\s+spec\b"),
     re.compile(r"(?is)\bcan you give me the specs?\b"),
     re.compile(r"(?is)\bgive me the specs?\b"),
     re.compile(r"(?is)\bwhat do i reference in order to approve\b"),
@@ -191,6 +194,9 @@ class ProductBriefIntelligence:
             "You are ProductAgent, an advisory product partner to the Founder and Product Lead.\n\n"
             "Return only structured Product Brief content. Be concise, factual, and "
             "decision-focused.\n"
+            "Treat any embedded decision ledger as authoritative conversation state.\n"
+            "Do not ask for decisions that are already recorded in the ledger.\n"
+            "Separate confirmed decisions from unresolved questions and recommendations.\n"
             "Do not claim approval, implementation authorization, or BuilderAgent work.\n"
             "Do not include hidden reasoning or chain-of-thought.\n"
             "If important information is missing, keep the brief bounded and place the gaps in "
@@ -504,7 +510,12 @@ class ProductBriefService:
         else:
             self._operation_store = operation_store
 
-    def create_or_reuse(self, context: ProductBriefContext, source_text: str) -> ProductBriefResult:
+    def create_or_reuse(
+        self,
+        context: ProductBriefContext,
+        source_text: str,
+        decision_ledger: ConversationDecisionLedger | None = None,
+    ) -> ProductBriefResult:
         operation_key = _operation_key("create_or_reuse", context.request_provenance)
         existing_operation = self._operation_store.get_operation(operation_key)
         if existing_operation is not None:
@@ -515,6 +526,8 @@ class ProductBriefService:
                     brief=existing_brief,
                 )
         draft = self._intelligence.create_draft(source_text)
+        if decision_ledger is not None:
+            draft = _apply_decision_ledger(draft, decision_ledger)
         brief_id = self._brief_id(context.source_linear_issue_identifier)
         existing_versions = self._store.list_versions(brief_id)
         content_hash = canonical_content_hash(
@@ -759,6 +772,102 @@ def _operation_key(operation_type: str, provenance: RequestProvenance) -> str:
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "op-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _apply_decision_ledger(
+    draft: ProductBriefDraft,
+    ledger: ConversationDecisionLedger,
+) -> ProductBriefDraft:
+    smallest_useful_scope = list(draft.smallest_useful_scope)
+    explicit_non_goals = list(draft.explicit_non_goals)
+    open_questions = list(draft.open_questions)
+    recommendations = list(draft.product_agent_recommendations)
+
+    if ledger.target_user:
+        draft = draft.model_copy(update={"target_user": ledger.target_user})
+    if ledger.primary_job:
+        smallest_useful_scope.insert(0, f"One workflow for {ledger.primary_job}.")
+    if ledger.initial_provider:
+        smallest_useful_scope.insert(
+            0,
+            f"One {ledger.initial_provider} workflow for {ledger.target_user or 'the Founder'}.",
+        )
+    if ledger.future_provider:
+        explicit_non_goals.append(
+            f"No {ledger.future_provider} support until the first slice is proven."
+        )
+    if ledger.allowed_initial_permissions:
+        smallest_useful_scope.append(
+            "Initial permissions: " + ", ".join(ledger.allowed_initial_permissions) + "."
+        )
+    if ledger.prohibited_initial_permissions:
+        explicit_non_goals.extend(
+            f"No {item} in the initial release." for item in ledger.prohibited_initial_permissions
+        )
+    if ledger.review_model:
+        recommendations.append(ledger.review_model)
+    if ledger.delete_gate:
+        recommendations.append(ledger.delete_gate)
+    if ledger.approval_model:
+        recommendations.append(ledger.approval_model)
+    if ledger.failure_modes:
+        explicit_non_goals.append(
+            "Avoid the main failure modes: " + ", ".join(ledger.failure_modes) + "."
+        )
+    if ledger.unresolved_questions:
+        open_questions = list(ledger.unresolved_questions)
+    else:
+        open_questions = [
+            question
+            for question in open_questions
+            if not _is_generic_question_already_answered(question, ledger)
+        ]
+
+    if ledger.founder_confirmed_decisions:
+        recommendations.extend(ledger.founder_confirmed_decisions)
+
+    return draft.model_copy(
+        update={
+            "smallest_useful_scope": list(dict.fromkeys(smallest_useful_scope)),
+            "explicit_non_goals": list(dict.fromkeys(explicit_non_goals)),
+            "open_questions": list(dict.fromkeys(open_questions)),
+            "product_agent_recommendations": list(dict.fromkeys(recommendations)),
+        }
+    )
+
+
+def _is_generic_question_already_answered(
+    question: str,
+    ledger: ConversationDecisionLedger,
+) -> bool:
+    normalized = " ".join(question.split()).lower()
+    if ledger.target_user and any(
+        marker in normalized
+        for marker in ("primary user", "who is the user", "who is the primary user")
+    ):
+        return True
+    if ledger.initial_provider and any(
+        marker in normalized
+        for marker in ("which providers", "what providers", "which email systems", "provider")
+    ):
+        return True
+    if ledger.primary_job and any(
+        marker in normalized
+        for marker in (
+            "primary job",
+            "job-to-be-done",
+            "what is the single most important job",
+            "what is the job",
+        )
+    ):
+        return True
+    return bool(
+        ledger.allowed_initial_permissions
+        and any(
+            marker in normalized
+            for marker in ("autonomy", "permissions", "read-only", "delete authority")
+        )
+    )
 
 
 def canonical_content_hash(

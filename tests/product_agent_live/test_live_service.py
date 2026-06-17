@@ -16,6 +16,7 @@ from ai_native_studio.product_agent_live.service import LiveProductAgentService
 from ai_native_studio.product_agent_live.storage import (
     FirestoreWebhookReceiptStore,
     InMemoryDocumentStore,
+    InMemoryProductBriefStore,
     InMemoryRequestProvenanceStore,
 )
 from ai_native_studio.product_agent_live.tokens import InstallationStore
@@ -76,6 +77,7 @@ class RecordingGraphClient:
         self.activities: list[tuple[str, dict[str, object], bool]] = []
         self.session_activities = list(session_activities or [])
         self.issue_comments = list(issue_comments or [])
+        self.issue_comment_fetches = 0
 
     def create_agent_activity(
         self,
@@ -92,6 +94,7 @@ class RecordingGraphClient:
 
     def fetch_issue_comments(self, issue_id: str) -> list[dict[str, object]]:
         assert issue_id
+        self.issue_comment_fetches += 1
         return list(self.issue_comments)
 
 
@@ -1368,6 +1371,114 @@ def test_webhook_creates_versioned_product_brief_on_explicit_request(tmp_path: P
     assert "created a versioned Product Brief" in clients[0].activities[1][1]["body"]
     assert "Created from: PST-1 / comment comment-1" in clients[0].activities[1][1]["body"]
     assert "APPROVE SPEC brief-pst-1-v1" in clients[0].activities[1][1]["body"]
+
+
+def test_webhook_decide_and_give_me_a_spec_uses_conversation_ledger(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    clients: list[RecordingGraphClient] = []
+
+    issue_comments = [
+        {
+            "id": "comment-answer-1",
+            "body": "Just me.",
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:30Z",
+        },
+        {
+            "id": "comment-answer-2",
+            "body": "Gmail first, ProtonMail later.",
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:31Z",
+        },
+        {
+            "id": "comment-answer-3",
+            "body": (
+                "Triage, label, categorize, and handle spam/unsubscribe. "
+                "Read-only plus ability to move messages into folders."
+            ),
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:32Z",
+        },
+        {
+            "id": "comment-answer-4",
+            "body": (
+                "User checks folders before granting real responsibility. "
+                "Delete authority only after roughly 100% accuracy for about two weeks. "
+                "Bulk approval, not per-email."
+            ),
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:33Z",
+        },
+    ]
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token, issue_comments=issue_comments)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=DeterministicFakeProductModel(),
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-ledger-brief-1"
+    payload["action"] = "prompted"
+    payload["agentActivity"] = {
+        "id": "activity-ledger-brief-1",
+        "body": "can you decide and give me a spec",
+        "userId": "founder-1",
+        "type": "prompt",
+    }
+    payload["agentSession"]["comment"]["body"] = (
+        "This thread is for an agent session with productagent."
+    )
+    payload["agentSession"]["previousComments"] = [
+        {
+            "id": "comment-app-1",
+            "body": "ProductAgent reviewed the request as advisory product work.",
+            "userId": "app-user-1",
+            "createdAt": "2026-06-17T13:08:20Z",
+        }
+    ]
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_010,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].issue_comment_fetches >= 1
+    response_body = clients[0].activities[-1][1]["body"]
+    assert "created a versioned Product Brief" in response_body
+    assert "Target user: Founder only" in response_body
+    assert "One Gmail workflow for Founder only." in response_body
+    assert "No delete messages in the initial release." in response_body
+    assert "APPROVE SPEC brief-pst-1-v1" in response_body
+    installation_store.close()
+    receipt_store.close()
 
 
 def test_issue_description_provenance_uses_bounded_excerpt(tmp_path: Path) -> None:

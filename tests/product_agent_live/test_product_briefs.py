@@ -25,6 +25,9 @@ from ai_native_studio.product_agent_live.storage import (
     InMemoryProductBriefStore,
 )
 from ai_native_studio.product_agent_live.tokens import InstallationStore
+from ai_native_studio.product_agent_proof.conversation_state import (
+    build_conversation_decision_ledger,
+)
 from ai_native_studio.product_agent_proof.dedup import WebhookReceiptStore
 from ai_native_studio.product_agent_proof.security import create_signature
 
@@ -68,10 +71,12 @@ class RecordingGraphClient:
         access_token: str,
         *,
         session_activities: list[dict[str, object]] | None = None,
+        issue_comments: list[dict[str, object]] | None = None,
     ) -> None:
         self.access_token = access_token
         self.activities: list[tuple[str, dict[str, object], bool]] = []
         self.session_activities = list(session_activities or [])
+        self.issue_comments = list(issue_comments or [])
         self.session_activity_fetches = 0
 
     def create_agent_activity(
@@ -87,6 +92,10 @@ class RecordingGraphClient:
         assert session_id
         self.session_activity_fetches += 1
         return list(self.session_activities)
+
+    def fetch_issue_comments(self, issue_id: str) -> list[dict[str, object]]:
+        assert issue_id
+        return list(self.issue_comments)
 
 
 def _draft(scope: str, *, title: str = "Email Agent Product Brief") -> ProductBriefDraft:
@@ -1043,6 +1052,37 @@ def test_requests_product_brief_accepts_spec_follow_up_question() -> None:
     assert requests_product_brief("can you give me the specs?")
     assert requests_product_brief("what do I reference in order to approve?")
     assert requests_product_brief("what do I approve?")
+    assert requests_product_brief("can you decide and give me a spec")
+
+
+def test_decision_ledger_overrides_generic_brief_questions() -> None:
+    text = (
+        "Just me. Gmail first. ProtonMail later. triage, label, categorize, and handle "
+        "spam/unsubscribe. read-only plus ability to move messages into folders. "
+        "user checks folders before granting real responsibility. delete authority only "
+        "after roughly 100% accuracy for about two weeks. bulk approval, not per-email. "
+        "spam/unsubscribe explicitly confirmed as in scope. no approval required for "
+        "folder creation and movement. main failure mode: miscategorization and deleting "
+        "email that should not be deleted."
+    )
+    ledger = build_conversation_decision_ledger([text])
+    service = ProductBriefService(
+        store=InMemoryProductBriefStore(InMemoryDocumentStore()),
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Generic scope"))),
+    )
+
+    result = service.create_or_reuse(_context(), text, decision_ledger=ledger)
+
+    assert result.brief.target_user == "Founder only"
+    assert result.brief.smallest_useful_scope[0] == "One Gmail workflow for Founder only."
+    assert "One workflow for triage, label, categorize, and handle spam/unsubscribe." in (
+        result.brief.smallest_useful_scope
+    )
+    assert "No delete messages in the initial release." in result.brief.explicit_non_goals
+    assert "Exact folder taxonomy and review bucket naming." in result.brief.open_questions
+    assert all(
+        "primary user" not in question.lower() for question in result.brief.open_questions
+    )
 
 
 def test_inline_backtick_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:

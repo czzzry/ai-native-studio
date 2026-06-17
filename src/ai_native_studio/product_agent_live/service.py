@@ -9,6 +9,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from ai_native_studio.product_agent_proof.conversation_state import (
+    ConversationDecisionLedger,
+    build_conversation_decision_ledger,
+    render_decision_ledger,
+    summarize_decision_ledger,
+)
 from ai_native_studio.product_agent_proof.dedup import ReceiptResult
 from ai_native_studio.product_agent_proof.intelligence import (
     IntelligenceError,
@@ -370,7 +376,11 @@ class LiveProductAgentService:
             live_comment = event.agent_session.comment
             live_agent_activity = event.agent_activity
             live_prompt_context = event.agent_session.prompt_context
-            live_issue_comment = self._latest_issue_human_comment(event, client)
+            live_issue_comments = self._live_issue_human_comments(event, client)
+            live_issue_comment = self._latest_previous_human_comment(
+                live_issue_comments,
+                event.app_user_id,
+            )
             live_agent_activity_keys = (
                 ",".join(sorted(self._extract_raw_metadata(live_agent_activity).keys()))
                 if live_agent_activity is not None
@@ -446,6 +456,7 @@ class LiveProductAgentService:
                 event,
                 provenance,
                 turn,
+                live_issue_comments=live_issue_comments,
             )
             stored_operation_type = (
                 turn.route_type
@@ -486,6 +497,7 @@ class LiveProductAgentService:
         event: LiveAgentSessionEvent,
         provenance: RequestProvenance,
         turn: ConversationTurn,
+        live_issue_comments: list[LiveLinearComment] | None = None,
     ) -> TerminalActivity:
         try:
             return self._compute_terminal_activity(
@@ -493,6 +505,7 @@ class LiveProductAgentService:
                 event,
                 provenance,
                 turn,
+                live_issue_comments=live_issue_comments,
             )
         except CommandResolutionError as error:
             return TerminalActivity(type="error", body=self._format_error_response(str(error)))
@@ -536,6 +549,7 @@ class LiveProductAgentService:
         event: LiveAgentSessionEvent,
         provenance: RequestProvenance,
         turn: ConversationTurn,
+        live_issue_comments: list[LiveLinearComment] | None = None,
     ) -> TerminalActivity:
         command_text = turn.exact_current_instruction
         if turn.route_type == "stop":
@@ -566,9 +580,22 @@ class LiveProductAgentService:
 
         if turn.route_type == "product_brief":
             started_at = time.monotonic()
+            decision_ledger = self._decision_ledger(
+                event,
+                client,
+                turn,
+                live_issue_comments=live_issue_comments,
+            )
             result = self._product_briefs.create_or_reuse(
                 self._brief_context(event, client, provenance, turn),
-                self._collect_live_context(event, turn),
+                self._brief_synthesis_context(
+                    event,
+                    client,
+                    turn,
+                    decision_ledger,
+                    live_issue_comments=live_issue_comments,
+                ),
+                decision_ledger=decision_ledger,
             )
             log_event(
                 "product_brief_response_completed",
@@ -576,6 +603,7 @@ class LiveProductAgentService:
                 latency_ms=int((time.monotonic() - started_at) * 1000),
                 result_status=result.status,
                 version_id=result.brief.version_id,
+                decision_ledger_summary=summarize_decision_ledger(decision_ledger),
             )
             return TerminalActivity(
                 type="response",
@@ -1196,6 +1224,25 @@ class LiveProductAgentService:
         ]
         return self._latest_previous_human_comment(parsed_comments, event.app_user_id)
 
+    def _live_issue_human_comments(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> list[LiveLinearComment]:
+        if not hasattr(client, "fetch_issue_comments"):
+            return []
+        comments = client.fetch_issue_comments(event.agent_session.issue.id)
+        parsed_comments = [
+            LiveLinearComment.model_validate(comment)
+            for comment in comments
+        ]
+        return [
+            comment
+            for comment in parsed_comments
+            if comment.body.strip()
+            and self._extract_actor_id_from_comment(comment) != event.app_user_id
+        ]
+
     @staticmethod
     def _activity_body(activity: object | None) -> str:
         if activity is None:
@@ -1613,6 +1660,64 @@ class LiveProductAgentService:
             "plan. If you want, I can turn this into a Product Brief or clarify the remaining "
             "gaps from your answers."
         )
+
+    def _decision_ledger(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        turn: ConversationTurn,
+        live_issue_comments: list[LiveLinearComment] | None = None,
+    ) -> ConversationDecisionLedger:
+        issue_comments = (
+            live_issue_comments
+            if live_issue_comments is not None
+            else self._live_issue_human_comments(event, client)
+        )
+        texts = [
+            event.agent_session.issue.title,
+            event.agent_session.issue.description,
+            event.agent_session.prompt_context,
+            turn.exact_current_instruction,
+            turn.recent_thread_context,
+            *[str(item) for item in event.agent_session.guidance],
+            *[comment.body for comment in event.agent_session.previous_comments if comment.body],
+            *[comment.body for comment in issue_comments],
+        ]
+        return build_conversation_decision_ledger(texts)
+
+    def _brief_synthesis_context(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        turn: ConversationTurn,
+        ledger: ConversationDecisionLedger,
+        live_issue_comments: list[LiveLinearComment] | None = None,
+    ) -> str:
+        issue_comments = (
+            live_issue_comments
+            if live_issue_comments is not None
+            else self._live_issue_human_comments(event, client)
+        )
+        parts = [
+            "Latest human prompt:",
+            turn.exact_current_instruction,
+            "",
+            render_decision_ledger(ledger),
+            "",
+            "Conversation context:",
+            event.agent_session.issue.title,
+            event.agent_session.issue.description,
+            event.agent_session.prompt_context,
+            turn.recent_thread_context,
+        ]
+        parts.extend(str(item) for item in event.agent_session.guidance)
+        parts.extend(
+            comment.body
+            for comment in event.agent_session.previous_comments
+            if comment.body
+        )
+        parts.extend(comment.body for comment in issue_comments)
+        return "\n".join(part for part in parts if part)
 
     @staticmethod
     def _reject(code: str, reason: str, http_status: int) -> WebhookProcessResult:
