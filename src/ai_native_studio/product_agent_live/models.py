@@ -87,3 +87,15 @@ class HealthCheckResult(PermissiveModel):
     missing_configuration: list[str] = Field(default_factory=list)
     configured_model_provider: str | None = None
     configured_model_name: str | None = None
+
+
+class StoredCommandOutcome(PermissiveModel):
+    operation_key: str
+    operation_type: Literal["advisory", "approval", "product_brief", "stop"]
+    session_id: str
+    source_activity_id: str | None = None
+    source_comment_id: str | None = None
+    source_event_id: str
+    terminal_activity_type: Literal["response", "elicitation", "error"]
+    terminal_body: str
+    processed_at_ms: int

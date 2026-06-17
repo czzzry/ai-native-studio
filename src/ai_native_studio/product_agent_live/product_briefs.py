@@ -743,7 +743,6 @@ def _operation_key(operation_type: str, provenance: RequestProvenance) -> str:
         "source_linear_issue_id": provenance.source_linear_issue_id,
         "source_comment_id": provenance.source_comment_id,
         "source_activity_id": provenance.source_activity_id,
-        "source_event_id": provenance.source_event_id,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "op-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]

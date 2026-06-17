@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from ai_native_studio.product_agent_proof.dedup import ReceiptResult
 from ai_native_studio.product_agent_proof.intelligence import (
@@ -37,6 +39,7 @@ from .models import (
     LiveLinearComment,
     LiveLinearIssue,
     OAuthCallbackResult,
+    StoredCommandOutcome,
     WebhookProcessResult,
 )
 from .product_briefs import (
@@ -51,6 +54,8 @@ from .product_briefs import (
     requests_product_brief,
 )
 from .storage import (
+    CommandOutcomeStoreProtocol,
+    InMemoryCommandOutcomeStore,
     InMemoryProductBriefStore,
     InMemoryRequestProvenanceStore,
     InstallationStoreProtocol,
@@ -75,7 +80,24 @@ class CommandEnvelope:
     source_comment_id: str | None
     source_event_id: str
     received_at_ms: int
+    signals: tuple[str, ...] = ()
     activity_typename: str | None = None
+
+
+@dataclass(frozen=True)
+class TerminalActivity:
+    type: str
+    body: str
+
+
+class CommandResolutionError(RuntimeError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class SessionExecutionError(RuntimeError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 class LiveProductAgentService:
@@ -88,6 +110,7 @@ class LiveProductAgentService:
         product_brief_store: ProductBriefStoreProtocol | None = None,
         product_brief_operation_store: ProductBriefOperationStoreProtocol | None = None,
         request_provenance_store: RequestProvenanceStoreProtocol | None = None,
+        command_outcome_store: CommandOutcomeStoreProtocol | None = None,
         oauth_client: LinearOAuthClient,
         graph_client_factory: GraphClientFactory,
         model: ProductAdvisoryModel | None = None,
@@ -102,6 +125,7 @@ class LiveProductAgentService:
         self._request_provenance_store = (
             request_provenance_store or InMemoryRequestProvenanceStore()
         )
+        self._command_outcome_store = command_outcome_store or InMemoryCommandOutcomeStore()
         self._oauth_client = oauth_client
         self._graph_client_factory = graph_client_factory
         self._timestamp_tolerance_seconds = timestamp_tolerance_seconds
@@ -315,43 +339,142 @@ class LiveProductAgentService:
     ) -> None:
         client = self._graph_client_factory(installation.access_token)
         try:
-            command = self._command_envelope(event, client)
-            provenance = self._request_provenance(event, client, command)
-            self._request_provenance_store.create(self._invocation_id(event), provenance)
-            client.create_agent_activity(
-                event.agent_session.id,
-                {
-                    "type": "thought",
-                    "body": self._thought_message(event, command),
-                },
-                ephemeral=True,
-            )
-            self._publish_session_response(client, event, provenance, command)
+            self._process_session_event(client, event)
         except LinearAuthError:
             refreshed = self._oauth_client.refresh(installation.refresh_token)
             self._installation_store.save_installation(refreshed)
             retry_client = self._graph_client_factory(refreshed.access_token)
-            command = self._command_envelope(event, retry_client)
-            provenance = self._request_provenance(event, retry_client, command)
+            self._process_session_event(retry_client, event, refreshed=True)
+
+    def _process_session_event(
+        self,
+        client: LinearGraphQLClient,
+        event: LiveAgentSessionEvent,
+        *,
+        refreshed: bool = False,
+    ) -> None:
+        try:
+            command = self._command_envelope(event, client)
+            provenance = self._request_provenance(event, client, command)
             self._request_provenance_store.create(self._invocation_id(event), provenance)
-            retry_client.create_agent_activity(
+            operation_type = self._operation_type(command)
+            operation_key = self._logical_operation_key(event, client, command, operation_type)
+            cached_outcome = self._command_outcome_store.get(operation_key)
+
+            client.create_agent_activity(
                 event.agent_session.id,
                 {
                     "type": "thought",
-                    "body": self._thought_message(event, command, refreshed=True),
+                    "body": self._thought_message(event, command, refreshed=refreshed),
                 },
                 ephemeral=True,
             )
-            self._publish_session_response(retry_client, event, provenance, command)
+            if cached_outcome is not None:
+                self._publish_terminal_activity(client, event.agent_session.id, cached_outcome)
+                return
 
-    def _publish_session_response(
+            terminal = self._build_terminal_activity(
+                client,
+                event,
+                provenance,
+                command,
+                operation_type,
+            )
+            outcome = StoredCommandOutcome(
+                operation_key=operation_key,
+                operation_type=operation_type,
+                session_id=event.agent_session.id,
+                source_activity_id=command.source_agent_activity_id,
+                source_comment_id=command.source_comment_id,
+                source_event_id=command.source_event_id,
+                terminal_activity_type=terminal.type,
+                terminal_body=terminal.body,
+                processed_at_ms=event.webhook_timestamp,
+            )
+        except CommandResolutionError as error:
+            outcome = StoredCommandOutcome(
+                operation_key=self._invocation_id(event),
+                operation_type="advisory",
+                session_id=event.agent_session.id,
+                source_activity_id=self._source_activity_id(event.agent_activity),
+                source_comment_id=(
+                    event.agent_session.comment.id if event.agent_session.comment else None
+                ),
+                source_event_id=self._source_event_id(event),
+                terminal_activity_type="error",
+                terminal_body=self._format_error_response(str(error)),
+                processed_at_ms=event.webhook_timestamp,
+            )
+        self._publish_terminal_activity(client, event.agent_session.id, outcome)
+        self._command_outcome_store.create(outcome)
+
+    def _build_terminal_activity(
         self,
         client: LinearGraphQLClient,
         event: LiveAgentSessionEvent,
         provenance: RequestProvenance,
         command: CommandEnvelope,
-    ) -> None:
+        operation_type: str,
+    ) -> TerminalActivity:
+        try:
+            return self._compute_terminal_activity(
+                client,
+                event,
+                provenance,
+                command,
+                operation_type,
+            )
+        except CommandResolutionError as error:
+            return TerminalActivity(type="error", body=self._format_error_response(str(error)))
+        except IntelligenceError as error:
+            latency_ms = 0
+            if operation_type == "product_brief":
+                provider = getattr(self._brief_model, "provider_name", self._model_provider)
+                model = getattr(self._brief_model, "model_name", self._model_name)
+            else:
+                provider = self._model_provider
+                model = self._model_name
+            log_event(
+                "provider_response_failed",
+                session_id=event.agent_session.id,
+                provider=provider,
+                model=model,
+                latency_ms=latency_ms,
+                error_category=self._provider_error_category(error),
+            )
+            return TerminalActivity(
+                type="response",
+                body=self._provider_failure_body(),
+            )
+        except Exception as error:
+            log_event(
+                "session_execution_failed",
+                session_id=event.agent_session.id,
+                error=type(error).__name__,
+            )
+            return TerminalActivity(
+                type="error",
+                body=self._format_error_response(
+                    "ProductAgent hit an internal error after receiving this command. "
+                    "No approval or Product Brief change was recorded."
+                ),
+            )
+
+    def _compute_terminal_activity(
+        self,
+        client: LinearGraphQLClient,
+        event: LiveAgentSessionEvent,
+        provenance: RequestProvenance,
+        command: CommandEnvelope,
+        operation_type: str,
+    ) -> TerminalActivity:
         command_text = command.exact_current_instruction
+        if operation_type == "stop":
+            return TerminalActivity(
+                type="response",
+                body=self._format_stop_response(event, command),
+            )
+
         approval = classify_approval_command(command_text)
         if approval.kind != "none":
             result = self._product_briefs.approve(
@@ -367,52 +490,32 @@ class LiveProductAgentService:
                 source_activity_id=command.source_agent_activity_id,
                 now_ms=event.webhook_timestamp,
             )
-            client.create_agent_activity(
-                event.agent_session.id,
-                {"type": "response", "body": format_approval_response(result, provenance)},
+            return TerminalActivity(
+                type="response",
+                body=format_approval_response(result, provenance),
             )
-            return
-        if requests_product_brief(command_text):
+
+        if operation_type == "product_brief":
             started_at = time.monotonic()
-            try:
-                result = self._product_briefs.create_or_reuse(
-                    self._brief_context(event, client, provenance, command),
-                    self._collect_live_context(event, command),
-                )
-            except IntelligenceError as error:
-                latency_ms = int((time.monotonic() - started_at) * 1000)
-                self._publish_provider_failure(client, event.agent_session.id)
-                log_event(
-                    "provider_response_failed",
-                    session_id=event.agent_session.id,
-                    provider=getattr(self._brief_model, "provider_name", self._model_provider),
-                    model=getattr(self._brief_model, "model_name", self._model_name),
-                    latency_ms=latency_ms,
-                    error_category=self._provider_error_category(error),
-                )
-                return
-            client.create_agent_activity(
-                event.agent_session.id,
-                {"type": "response", "body": format_product_brief_response(result)},
+            result = self._product_briefs.create_or_reuse(
+                self._brief_context(event, client, provenance, command),
+                self._collect_live_context(event, command),
             )
-            return
+            log_event(
+                "product_brief_response_completed",
+                session_id=event.agent_session.id,
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                result_status=result.status,
+                version_id=result.brief.version_id,
+            )
+            return TerminalActivity(
+                type="response",
+                body=format_product_brief_response(result),
+            )
 
         synthetic_event = self._synthetic_event(event, command)
         started_at = time.monotonic()
-        try:
-            response = self._policy.evaluate(synthetic_event)
-        except IntelligenceError as error:
-            latency_ms = int((time.monotonic() - started_at) * 1000)
-            self._publish_provider_failure(client, event.agent_session.id)
-            log_event(
-                "provider_response_failed",
-                session_id=event.agent_session.id,
-                provider=self._model_provider,
-                model=self._model_name,
-                latency_ms=latency_ms,
-                error_category=self._provider_error_category(error),
-            )
-            return
+        response = self._policy.evaluate(synthetic_event)
         usage = response.advisory_result.model_usage
         log_event(
             "provider_response_completed",
@@ -425,9 +528,23 @@ class LiveProductAgentService:
             total_tokens=usage.total_tokens,
             estimated_cost_usd=usage.estimated_cost_usd,
         )
+        return TerminalActivity(
+            type="response",
+            body=format_response(response, provenance),
+        )
+
+    @staticmethod
+    def _publish_terminal_activity(
+        client: LinearGraphQLClient,
+        session_id: str,
+        outcome: StoredCommandOutcome,
+    ) -> None:
         client.create_agent_activity(
-            event.agent_session.id,
-            {"type": "response", "body": format_response(response, provenance)},
+            session_id,
+            {
+                "type": outcome.terminal_activity_type,
+                "body": outcome.terminal_body,
+            },
         )
 
     @staticmethod
@@ -505,6 +622,18 @@ class LiveProductAgentService:
                     "- Retry this request after the provider issue is resolved."
                 ),
             },
+        )
+
+    def _provider_failure_body(self) -> str:
+        return (
+            "ProductAgent could not complete the advisory because its model provider was "
+            "temporarily unavailable.\n\n"
+            "**Status**\n"
+            "- No Founder approval was created.\n"
+            "- No BuilderAgent work was commissioned.\n"
+            "- No product decision was approved.\n\n"
+            "**Next step**\n"
+            "- Retry this request after the provider issue is resolved."
         )
 
     @staticmethod
@@ -589,8 +718,7 @@ class LiveProductAgentService:
 
     @staticmethod
     def _extract_metadata_value(model, *path) -> str | None:
-        payload = model.model_dump()
-        payload.update(getattr(model, "model_extra", None) or {})
+        payload = LiveProductAgentService._extract_raw_metadata(model)
         if len(path) == 1 and isinstance(path[0], tuple):
             return LiveProductAgentService._extract_nested(payload, path[0])
         current = payload
@@ -615,60 +743,62 @@ class LiveProductAgentService:
         client: LinearGraphQLClient,
     ) -> CommandEnvelope:
         session = event.agent_session
-        activity = event.agent_activity
-        activity_body = self._activity_body(activity)
-        activity_kind = self._activity_kind(activity)
         comment = session.comment
-
-        if activity_body and self._is_user_generated_activity(activity_kind):
+        if event.action == "created":
+            instruction = ""
+            source_type = "issue_description"
+            source_comment_id = None
+            actor_id = self._extract_actor_id_from_comment(comment) if comment is not None else None
+            if comment is not None and comment.body.strip():
+                instruction = comment.body.strip()
+                source_type = "comment"
+                source_comment_id = comment.id
+            elif session.issue.description.strip():
+                instruction = session.issue.description.strip()
+            if not instruction:
+                raise CommandResolutionError(
+                    "ProductAgent could not identify the instruction that created this session."
+                )
             return CommandEnvelope(
                 webhook_action=event.action,
                 agent_session_id=session.id,
-                actor_linear_user_id=(
-                    self._actor_from_activity(activity)
-                    or (
-                        self._extract_actor_id_from_comment(comment)
-                        if comment is not None
-                        else None
-                    )
-                    or event.app_user_id
-                ),
-                source_type="comment",
-                exact_current_instruction=activity_body,
-                source_agent_activity_id=self._source_activity_id(activity),
-                source_comment_id=self._source_comment_id(comment, activity_body),
+                actor_linear_user_id=actor_id or event.app_user_id,
+                source_type=source_type,
+                exact_current_instruction=instruction,
+                source_agent_activity_id=None,
+                source_comment_id=source_comment_id,
                 source_event_id=self._source_event_id(event),
                 received_at_ms=event.webhook_timestamp,
-                activity_typename=activity_kind,
-            )
-        if activity_body and not self._is_user_generated_activity(activity_kind):
-            raise LinearAPIError(
-                "ProductAgent received a model-generated activity "
-                "where a user command was expected."
+                activity_typename=None,
             )
 
-        instruction = self._current_instruction_body(event)
-        if not instruction.strip():
-            raise LinearAPIError(
-                "ProductAgent could not identify a triggering instruction for this webhook."
+        activity = self._resolve_prompted_activity(event, client)
+        activity_kind = self._activity_kind(activity)
+        if not self._is_user_generated_activity(activity_kind):
+            raise CommandResolutionError(
+                "ProductAgent received a model-generated activity where a human prompt was "
+                "expected."
+            )
+        instruction = self._activity_instruction(activity)
+        if not instruction:
+            raise CommandResolutionError(
+                "ProductAgent could not identify a current human prompt for this prompted webhook."
             )
         return CommandEnvelope(
             webhook_action=event.action,
             agent_session_id=session.id,
             actor_linear_user_id=(
-                self._extract_actor_id_from_comment(comment) if comment is not None else None
+                self._actor_from_activity(activity)
+                or (self._extract_actor_id_from_comment(comment) if comment is not None else None)
             )
             or event.app_user_id,
-            source_type=(
-                "comment"
-                if session.comment and session.comment.body.strip()
-                else "issue_description"
-            ),
+            source_type="comment",
             exact_current_instruction=instruction,
             source_agent_activity_id=self._source_activity_id(activity),
-            source_comment_id=self._source_comment_id(comment, instruction),
+            source_comment_id=None,
             source_event_id=self._source_event_id(event),
             received_at_ms=event.webhook_timestamp,
+            signals=self._activity_signals(activity),
             activity_typename=activity_kind,
         )
 
@@ -678,6 +808,16 @@ class LiveProductAgentService:
             return ""
         body = LiveProductAgentService._extract_metadata_value(activity, "body")
         return body.strip() if body else ""
+
+    @staticmethod
+    def _activity_instruction(activity: object | None) -> str:
+        body = LiveProductAgentService._activity_body(activity)
+        if body:
+            return body
+        signals = LiveProductAgentService._activity_signals(activity)
+        if "stop" in signals:
+            return "stop"
+        return ""
 
     @staticmethod
     def _activity_kind(activity: object | None) -> str | None:
@@ -706,6 +846,27 @@ class LiveProductAgentService:
         return None
 
     @staticmethod
+    def _activity_signals(activity: object | None) -> tuple[str, ...]:
+        if activity is None:
+            return ()
+        signals: list[str] = []
+        raw = LiveProductAgentService._extract_raw_metadata(activity).get("signals")
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    signals.append(item.strip().lower())
+                elif isinstance(item, dict):
+                    for key in ("name", "type", "signal"):
+                        value = item.get(key)
+                        if isinstance(value, str) and value.strip():
+                            signals.append(value.strip().lower())
+                            break
+        body = LiveProductAgentService._activity_body(activity).strip().lower()
+        if body == "stop":
+            signals.append("stop")
+        return tuple(dict.fromkeys(signals))
+
+    @staticmethod
     def _source_activity_id(activity: object | None) -> str | None:
         if activity is None:
             return None
@@ -721,10 +882,6 @@ class LiveProductAgentService:
         if current_instruction.strip() != comment.body.strip():
             return None
         return comment.id
-
-    @staticmethod
-    def _comment_text(event: LiveAgentSessionEvent) -> str:
-        return LiveProductAgentService._current_instruction_body(event)
 
     @staticmethod
     def _collect_live_context(event: LiveAgentSessionEvent, command: CommandEnvelope) -> str:
@@ -752,6 +909,8 @@ class LiveProductAgentService:
                 prefix
                 + "ProductAgent is validating the Founder approval command deterministically."
             )
+        if "stop" in command.signals:
+            return prefix + "ProductAgent is honoring the stop signal without starting new work."
         if requests_product_brief(command_text):
             return (
                 prefix
@@ -816,21 +975,164 @@ class LiveProductAgentService:
         return event.webhook_id
 
     @staticmethod
-    def _current_instruction_body(event: LiveAgentSessionEvent) -> str:
-        session = event.agent_session
-        if event.agent_activity is not None:
-            body = LiveProductAgentService._activity_body(event.agent_activity)
-            if body and LiveProductAgentService._is_user_generated_activity(
-                LiveProductAgentService._activity_kind(event.agent_activity)
-            ):
-                return body
-        if session.comment and session.comment.body.strip():
-            return session.comment.body.strip()
-        return session.issue.description.strip()
-
-    @staticmethod
     def _invocation_id(event: LiveAgentSessionEvent) -> str:
         return f"{event.webhook_id}:{event.webhook_timestamp}"
+
+    def _operation_type(self, command: CommandEnvelope) -> str:
+        if "stop" in command.signals:
+            return "stop"
+        if classify_approval_command(command.exact_current_instruction).kind != "none":
+            return "approval"
+        if requests_product_brief(command.exact_current_instruction):
+            return "product_brief"
+        return "advisory"
+
+    def _logical_operation_key(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        command: CommandEnvelope,
+        operation_type: str,
+    ) -> str:
+        workspace_id = self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            "organizationId",
+        )
+        workspace_id = workspace_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("organization", "id"),
+        )
+        team_id = self._extract_issue_metadata_value(event.agent_session.issue, "teamId")
+        team_id = team_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("team", "id"),
+        )
+        if not workspace_id or not team_id:
+            metadata = client.fetch_issue_metadata(event.agent_session.issue.id)
+            workspace_id = workspace_id or metadata.get("workspace_id") or ""
+            team_id = team_id or metadata.get("team_id") or ""
+        payload = {
+            "operation_type": operation_type,
+            "workspace_id": workspace_id,
+            "team_id": team_id,
+            "issue_id": event.agent_session.issue.id,
+            "session_id": command.agent_session_id,
+            "source_activity_id": command.source_agent_activity_id,
+            "source_comment_id": command.source_comment_id,
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return "cmd-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+    def _resolve_prompted_activity(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> object:
+        inline_activity = event.agent_activity
+        if inline_activity is not None and self._activity_instruction(inline_activity):
+            return inline_activity
+        if not hasattr(client, "fetch_agent_session_activities"):
+            raise CommandResolutionError(
+                "ProductAgent could not identify a current human prompt for this prompted webhook."
+            )
+        activities = client.fetch_agent_session_activities(event.agent_session.id)
+        prompts = [activity for activity in activities if self._is_prompt_candidate(activity)]
+        if not prompts:
+            raise CommandResolutionError(
+                "ProductAgent could not identify a current human prompt for this prompted webhook."
+            )
+        eligible = [
+            activity
+            for activity in prompts
+            if self._activity_created_at_ms(activity) is None
+            or self._activity_created_at_ms(activity) <= event.webhook_timestamp
+        ]
+        candidates = eligible or prompts
+        latest_ms = max(self._activity_created_at_ms(activity) or -1 for activity in candidates)
+        if latest_ms >= 0:
+            candidates = [
+                activity
+                for activity in candidates
+                if (self._activity_created_at_ms(activity) or -1) == latest_ms
+            ]
+        if len(candidates) != 1:
+            raise CommandResolutionError(
+                "ProductAgent found multiple possible human prompts for this prompted webhook and "
+                "failed closed without creating new work."
+            )
+        return candidates[0]
+
+    def _is_prompt_candidate(self, activity: object) -> bool:
+        kind = (self._activity_kind(activity) or "").lower()
+        if kind and kind in {"thought", "response", "error", "action", "elicitation"}:
+            return False
+        if (
+            kind
+            and "prompt" not in kind
+            and "comment" not in kind
+            and "message" not in kind
+            and "stop" not in self._activity_signals(activity)
+        ):
+            return False
+        return bool(self._activity_instruction(activity))
+
+    @staticmethod
+    def _activity_created_at_ms(activity: object) -> int | None:
+        raw = LiveProductAgentService._extract_raw_metadata(activity)
+        for key in ("createdAt", "updatedAt", "timestamp"):
+            value = raw.get(key)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                return int(parsed.astimezone(UTC).timestamp() * 1000)
+        return None
+
+    @staticmethod
+    def _extract_raw_metadata(model) -> dict[str, object]:
+        payload = model.model_dump() if hasattr(model, "model_dump") else {}
+        payload.update(getattr(model, "model_extra", None) or {})
+        if isinstance(model, dict):
+            payload.update(model)
+        return payload
+
+    @staticmethod
+    def _format_error_response(message: str) -> str:
+        return (
+            f"{message}\n\n"
+            "**Status**\n"
+            "- No OpenAI follow-up was started from this webhook.\n"
+            "- No Product Brief was created or changed.\n"
+            "- No Founder approval was recorded."
+        )
+
+    def _format_stop_response(self, event: LiveAgentSessionEvent, command: CommandEnvelope) -> str:
+        prior_work = [
+            outcome
+            for outcome in self._command_outcome_store.list_for_session(event.agent_session.id)
+            if outcome.processed_at_ms < command.received_at_ms
+            and outcome.operation_type != "stop"
+        ]
+        if prior_work:
+            return (
+                "ProductAgent received the stop signal and will not start any new work for this "
+                "prompt.\n\n"
+                "**Status**\n"
+                "- Earlier work in this session had already completed before the stop arrived.\n"
+                "- No new OpenAI call was started for this stop request.\n"
+                "- No Product Brief was created or changed.\n"
+                "- No Founder approval was recorded."
+            )
+        return (
+            "ProductAgent received the stop signal and stopped without starting new work.\n\n"
+            "**Status**\n"
+            "- No OpenAI call was started.\n"
+            "- No Product Brief was created or changed.\n"
+            "- No Founder approval was recorded."
+        )
 
     @staticmethod
     def _reject(code: str, reason: str, http_status: int) -> WebhookProcessResult:
