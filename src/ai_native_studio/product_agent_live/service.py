@@ -801,13 +801,23 @@ class LiveProductAgentService:
                 if self._looks_like_thread_starter(instruction) or self._looks_like_boilerplate(
                     instruction
                 ):
-                    resolved_activity = self._resolve_live_human_activity(event, client)
-                    if resolved_activity is not None:
-                        instruction = self._activity_instruction(resolved_activity)
-                        if instruction:
-                            source_comment_id = self._source_activity_id(resolved_activity)
-                            source_type = "comment"
-                            actor_id = self._actor_from_activity(resolved_activity) or actor_id
+                    latest_previous = self._latest_previous_human_comment(
+                        session.previous_comments,
+                        event.app_user_id,
+                    )
+                    if latest_previous is not None:
+                        instruction = latest_previous.body.strip()
+                        source_comment_id = latest_previous.id
+                        source_type = "comment"
+                        actor_id = self._extract_actor_id_from_comment(latest_previous) or actor_id
+                    else:
+                        resolved_activity = self._resolve_live_human_activity(event, client)
+                        if resolved_activity is not None:
+                            instruction = self._activity_instruction(resolved_activity)
+                            if instruction:
+                                source_comment_id = self._source_activity_id(resolved_activity)
+                                source_type = "comment"
+                                actor_id = self._actor_from_activity(resolved_activity) or actor_id
                 if self._looks_like_thread_starter(instruction):
                     latest_previous = self._latest_previous_human_comment(
                         session.previous_comments,
@@ -1295,6 +1305,15 @@ class LiveProductAgentService:
     ) -> object:
         inline_activity = event.agent_activity
         if inline_activity is not None and self._activity_instruction(inline_activity):
+            latest_previous = self._latest_previous_human_comment(
+                event.agent_session.previous_comments,
+                event.app_user_id,
+            )
+            if latest_previous is not None and (
+                self._looks_like_thread_starter(self._activity_instruction(inline_activity))
+                or self._looks_like_boilerplate(self._activity_instruction(inline_activity))
+            ):
+                return latest_previous
             return inline_activity
         if not hasattr(client, "fetch_agent_session_activities"):
             raise CommandResolutionError(
@@ -1325,7 +1344,17 @@ class LiveProductAgentService:
                 "ProductAgent found multiple possible human prompts for this prompted webhook and "
                 "failed closed without creating new work."
             )
-        return candidates[0]
+        candidate = candidates[0]
+        latest_previous = self._latest_previous_human_comment(
+            event.agent_session.previous_comments,
+            event.app_user_id,
+        )
+        if latest_previous is not None and (
+            self._looks_like_thread_starter(self._activity_instruction(candidate))
+            or self._looks_like_boilerplate(self._activity_instruction(candidate))
+        ):
+            return latest_previous
+        return candidate
 
     def _is_prompt_candidate(self, activity: object) -> bool:
         kind = (self._activity_kind(activity) or "").lower()
