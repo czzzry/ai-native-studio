@@ -590,6 +590,72 @@ def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_re
     receipt_store.close()
 
 
+def test_advisory_follow_up_retries_on_exact_user_wording_without_boilerplate(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    model = RejectingAdvisoryModel()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=model,
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-follow-up-exact-wording"
+    payload["agentSession"]["comment"]["body"] = (
+        "can you try again and respond based on the answers I gave you?"
+    )
+    payload["agentSession"]["previousComments"] = [
+        {"id": "comment-previous-1", "body": "Just me.", "userId": "founder-1"},
+        {
+            "id": "comment-previous-2",
+            "body": "Triage, label, categorize, and review the risky items.",
+            "userId": "founder-1",
+        },
+    ]
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_400,
+    )
+
+    assert result.status == "accepted"
+    response_body = clients[0].activities[-1][1]["body"]
+    assert response_body.startswith(
+        "You asked me to answer back based on the thread and your clarifying answers."
+    )
+    assert "Build a single Gmail inbox triage workflow" in response_body
+    assert "Request received" not in response_body
+    assert "Clarifying questions" not in response_body
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_unconfigured_health_and_oauth_routes_are_safe(tmp_path: Path) -> None:
     live_config = LiveProductAgentConfig(
         app_env="test",

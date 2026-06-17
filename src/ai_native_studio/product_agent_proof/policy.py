@@ -92,6 +92,8 @@ class ProductAgentPolicy:
             "turn my answers",
             "concrete v1 plan",
             "smallest useful v1",
+            "respond based on the answers",
+            "based on the answers i gave you",
             "do not repeat",
             "dont just repeat",
             "don't just repeat",
