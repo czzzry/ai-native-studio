@@ -367,6 +367,8 @@ class LiveProductAgentService:
             self._request_provenance_store.create(self._invocation_id(event), provenance)
             operation_key = self._logical_operation_key(turn)
             cached_outcome = self._command_outcome_store.get(operation_key)
+            live_comment = event.agent_session.comment
+            live_agent_activity = event.agent_activity
             log_event(
                 "conversation_turn_resolved",
                 session_id=event.agent_session.id,
@@ -377,6 +379,24 @@ class LiveProductAgentService:
                 route_type=turn.route_type,
                 reused_cached_outcome=cached_outcome is not None,
                 previous_agent_response_count=turn.previous_agent_response_count,
+                live_comment_id=self._source_activity_id(live_comment),
+                live_comment_sha256=(
+                    hashlib.sha256(
+                        " ".join(self._activity_instruction(live_comment).split()).encode("utf-8")
+                    ).hexdigest()[:12]
+                    if self._activity_instruction(live_comment)
+                    else None
+                ),
+                live_agent_activity_id=self._source_activity_id(live_agent_activity),
+                live_agent_activity_sha256=(
+                    hashlib.sha256(
+                        " ".join(
+                            self._activity_instruction(live_agent_activity).split()
+                        ).encode("utf-8")
+                    ).hexdigest()[:12]
+                    if self._activity_instruction(live_agent_activity)
+                    else None
+                ),
             )
 
             client.create_agent_activity(
