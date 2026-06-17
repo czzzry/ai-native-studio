@@ -367,8 +367,10 @@ def test_advisory_follow_up_includes_previous_comments_in_model_input(tmp_path: 
 
     assert result.status == "accepted"
     assert model.requests
-    assert "Just me." in model.requests[0].untrusted_product_input
-    assert "Triage, label, categorize" in model.requests[0].untrusted_product_input
+    assert model.requests[0].untrusted_product_input.startswith(
+        "Current human comment:\nTriage, label, categorize, and review the risky items."
+    )
+    assert "Earlier thread comments:" in model.requests[0].untrusted_product_input
     assert len(clients[0].activities) >= 1
     installation_store.close()
     receipt_store.close()

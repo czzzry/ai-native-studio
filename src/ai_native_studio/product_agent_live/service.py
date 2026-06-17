@@ -761,6 +761,11 @@ class LiveProductAgentService:
                 instruction = comment.body.strip()
                 source_type = "comment"
                 source_comment_id = comment.id
+                if self._looks_like_thread_starter(instruction):
+                    latest_previous = self._latest_previous_comment(session.previous_comments)
+                    if latest_previous is not None:
+                        instruction = latest_previous.body.strip()
+                        source_comment_id = latest_previous.id
             elif session.issue.description.strip():
                 instruction = session.issue.description.strip()
             if not instruction:
@@ -856,6 +861,20 @@ class LiveProductAgentService:
             signals=self._activity_signals(activity),
             activity_typename=activity_kind,
         )
+
+    @staticmethod
+    def _looks_like_thread_starter(text: str) -> bool:
+        normalized = " ".join(text.split()).lower()
+        return normalized == "this thread is for an agent session with productagent."
+
+    @staticmethod
+    def _latest_previous_comment(
+        comments: list[LiveLinearComment],
+    ) -> LiveLinearComment | None:
+        for comment in reversed(comments):
+            if comment.body.strip():
+                return comment
+        return None
 
     @staticmethod
     def _activity_body(activity: object | None) -> str:

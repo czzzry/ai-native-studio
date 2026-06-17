@@ -70,14 +70,19 @@ class ProductAgentPolicy:
     @staticmethod
     def _collect_untrusted_content(event: AgentSessionEvent) -> str:
         session = event.agent_session
-        values = [
-            session.issue.title,
-            session.issue.description,
-            session.prompt_context,
-            *(session.guidance),
-            *(comment.body for comment in session.previous_comments if comment.body),
-            *(session.repository_content),
-        ]
+        values: list[str] = []
         if session.comment:
-            values.append(session.comment.body)
+            values.append("Current human comment:\n" + session.comment.body)
+        previous_comments = [comment.body for comment in session.previous_comments if comment.body]
+        if previous_comments:
+            values.append("Earlier thread comments:\n" + "\n".join(previous_comments))
+        values.extend(
+            [
+                f"Issue title: {session.issue.title}",
+                f"Issue description: {session.issue.description}",
+                f"Prompt context: {session.prompt_context}",
+                *(f"Guidance: {item}" for item in session.guidance),
+                *(f"Repository content: {item}" for item in session.repository_content),
+            ]
+        )
         return "\n".join(values)
