@@ -1983,6 +1983,55 @@ def test_stop_signal_prevents_model_call_and_duplicate_stop_is_idempotent(tmp_pa
     receipt_store.close()
 
 
+def test_stop_comment_with_productagent_mention_is_terminal(tmp_path: Path) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+    model = CountingModel()
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=model,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-stop-comment-1"
+    payload["agentSession"]["comment"]["body"] = "@ProductAgent stop"
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_020,
+    )
+
+    assert result.status == "accepted"
+    assert model.calls == 0
+    assert "stop signal" in clients[0].activities[1][1]["body"]
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_repeated_logical_delivery_reuses_advisory_without_second_model_call(
     tmp_path: Path,
 ) -> None:

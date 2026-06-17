@@ -987,6 +987,7 @@ class LiveProductAgentService:
                 recent_thread_context="",
                 previous_agent_response_count=0,
                 route_type="advisory",
+                signals=self._activity_signals(comment),
                 activity_typename=None,
             )
 
@@ -1536,6 +1537,8 @@ class LiveProductAgentService:
                             signals.append(value.strip().lower())
                             break
         body = LiveProductAgentService._activity_body(activity).strip().lower()
+        if body.startswith("@productagent"):
+            body = body[len("@productagent") :].lstrip(" \t:,-")
         if body == "stop":
             signals.append("stop")
         activity_type = LiveProductAgentService._activity_kind(activity)
