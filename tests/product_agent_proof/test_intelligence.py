@@ -28,7 +28,10 @@ from ai_native_studio.product_agent_proof.providers import (
     OpenAIResponsesProductModel,
     ProviderRuntimeError,
 )
-from ai_native_studio.product_agent_proof.role_config import load_product_agent_role
+from ai_native_studio.product_agent_proof.role_config import (
+    load_product_agent_prompt,
+    load_product_agent_role,
+)
 from ai_native_studio.product_agent_proof.service import ProductAgentWebhookService
 
 from .test_service import NOW_MS, encode, make_event, signed_headers
@@ -39,6 +42,13 @@ def intelligence(model=None) -> ProductAgentIntelligence:
         load_product_agent_role(),
         model or DeterministicFakeProductModel(),
     )
+
+
+def test_product_agent_prompt_requires_direct_v1_synthesis_when_answers_exist() -> None:
+    prompt = load_product_agent_prompt()
+
+    assert "synthesize that into a direct v1 recommendation" in prompt
+    assert "Use the latest human request as the turn to answer now" in prompt
 
 
 class StubResponseUsage:

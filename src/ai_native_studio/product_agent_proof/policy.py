@@ -72,10 +72,12 @@ class ProductAgentPolicy:
         session = event.agent_session
         values: list[str] = []
         if session.comment:
-            values.append("Current human comment:\n" + session.comment.body)
+            values.append("Latest human request to answer now:\n" + session.comment.body)
         previous_comments = [comment.body for comment in session.previous_comments if comment.body]
         if previous_comments:
-            values.append("Earlier thread comments:\n" + "\n".join(previous_comments))
+            values.append(
+                "Earlier thread comments for context only:\n" + "\n".join(previous_comments)
+            )
         values.extend(
             [
                 f"Issue title: {session.issue.title}",

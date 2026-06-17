@@ -368,9 +368,10 @@ def test_advisory_follow_up_includes_previous_comments_in_model_input(tmp_path: 
     assert result.status == "accepted"
     assert model.requests
     assert model.requests[0].untrusted_product_input.startswith(
-        "Current human comment:\nTriage, label, categorize, and review the risky items."
+        "Latest human request to answer now:\n"
+        "Triage, label, categorize, and review the risky items."
     )
-    assert "Earlier thread comments:" in model.requests[0].untrusted_product_input
+    assert "Earlier thread comments for context only:" in model.requests[0].untrusted_product_input
     assert len(clients[0].activities) >= 1
     installation_store.close()
     receipt_store.close()
@@ -435,7 +436,7 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
     assert result.status == "accepted"
     assert model.requests
     assert model.requests[0].untrusted_product_input.startswith(
-        "Current human comment:\nUser: please give me the smallest useful v1."
+        "Latest human request to answer now:\nUser: please give me the smallest useful v1."
     )
     installation_store.close()
     receipt_store.close()
