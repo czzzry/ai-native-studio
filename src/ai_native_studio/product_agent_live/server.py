@@ -209,6 +209,7 @@ def main() -> None:
         product_brief_store,
         product_brief_operation_store,
         request_provenance_store,
+        command_outcome_store,
     ) = _service()
     server = ThreadingHTTPServer(
         ("0.0.0.0", int(__import__("os").environ.get("PORT", "8080"))), _handler(service)
@@ -232,6 +233,7 @@ def main() -> None:
         product_brief_store.close()
         product_brief_operation_store.close()
         request_provenance_store.close()
+        command_outcome_store.close()
 
 
 if __name__ == "__main__":
