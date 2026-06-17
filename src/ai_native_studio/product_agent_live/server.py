@@ -18,11 +18,13 @@ from .linear_api import LinearGraphQLClient, LinearOAuthClient
 from .logging_utils import configure_logging, log_event
 from .service import LiveProductAgentService
 from .storage import (
+    CommandOutcomeStoreProtocol,
     InstallationStoreProtocol,
     ProductBriefOperationStoreProtocol,
     ProductBriefStoreProtocol,
     ReceiptStoreProtocol,
     RequestProvenanceStoreProtocol,
+    build_command_outcome_store,
     build_installation_store,
     build_product_brief_operation_store,
     build_product_brief_store,
@@ -91,6 +93,7 @@ def _service() -> tuple[
     ProductBriefStoreProtocol,
     ProductBriefOperationStoreProtocol,
     RequestProvenanceStoreProtocol,
+    CommandOutcomeStoreProtocol,
 ]:
     config = load_live_config()
     config.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +102,7 @@ def _service() -> tuple[
     product_brief_store = build_product_brief_store(config)
     product_brief_operation_store = build_product_brief_operation_store(config)
     request_provenance_store = build_request_provenance_store(config)
+    command_outcome_store = build_command_outcome_store(config)
     oauth_client = LinearOAuthClient(config)
     service = LiveProductAgentService(
         config,
@@ -107,6 +111,7 @@ def _service() -> tuple[
         product_brief_store=product_brief_store,
         product_brief_operation_store=product_brief_operation_store,
         request_provenance_store=request_provenance_store,
+        command_outcome_store=command_outcome_store,
         oauth_client=oauth_client,
         graph_client_factory=lambda access_token: LinearGraphQLClient(config, access_token),
         model=_build_model(config),
@@ -119,6 +124,7 @@ def _service() -> tuple[
         product_brief_store,
         product_brief_operation_store,
         request_provenance_store,
+        command_outcome_store,
     )
 
 

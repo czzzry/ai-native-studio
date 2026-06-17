@@ -65,9 +65,15 @@ class MissingWriteScopeOAuthClient(StubOAuthClient):
 
 
 class RecordingGraphClient:
-    def __init__(self, access_token: str) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        *,
+        session_activities: list[dict[str, object]] | None = None,
+    ) -> None:
         self.access_token = access_token
         self.activities: list[tuple[str, dict[str, object], bool]] = []
+        self.session_activities = list(session_activities or [])
 
     def create_agent_activity(
         self,
@@ -77,6 +83,10 @@ class RecordingGraphClient:
         ephemeral: bool = False,
     ) -> None:
         self.activities.append((session_id, content, ephemeral))
+
+    def fetch_agent_session_activities(self, session_id: str) -> list[dict[str, object]]:
+        assert session_id
+        return list(self.session_activities)
 
 
 class RefreshThenRecordClient(RecordingGraphClient):
@@ -179,6 +189,53 @@ def service_fixture(tmp_path: Path):
         model=DeterministicFakeProductModel(),
     )
     return service, installation_store, receipt_store, clients
+
+
+def service_fixture_with_activities(
+    tmp_path: Path,
+    session_activities: list[dict[str, object]],
+):
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token, session_activities=session_activities)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=DeterministicFakeProductModel(),
+    )
+    return service, installation_store, receipt_store, clients
+
+
+class CountingModel(DeterministicFakeProductModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def generate(self, request):
+        self.calls += 1
+        return super().generate(request)
+
+
+class CrashModel:
+    provider_name = "fake"
+    model_name = "crash-model"
+
+    def generate(self, request):
+        del request
+        raise RuntimeError("simulated unexpected crash")
 
 
 def event_payload() -> dict[str, object]:
@@ -675,6 +732,180 @@ def test_webhook_publishes_safe_response_when_provider_fails(tmp_path: Path, cap
     assert "No BuilderAgent work was commissioned." in clients[0].activities[1][1]["body"]
     assert "No Founder approval was created." in clients[0].activities[1][1]["body"]
     assert "Synthetic prompt context" not in caplog.text
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_exception_after_initial_thought_emits_error_activity(tmp_path: Path) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=CrashModel(),
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    body = json.dumps(event_payload()).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].activities[0][1]["type"] == "thought"
+    assert clients[0].activities[1][1]["type"] == "error"
+    assert "internal error after receiving this command" in clients[0].activities[1][1]["body"]
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_stop_signal_prevents_model_call_and_duplicate_stop_is_idempotent(tmp_path: Path) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+    model = CountingModel()
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=model,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    payload = event_payload()
+    payload["action"] = "prompted"
+    payload["webhookId"] = "hook-stop-1"
+    payload["agentActivity"] = {
+        "id": "activity-stop-1",
+        "type": "prompt",
+        "body": "stop",
+        "signals": ["stop"],
+        "user": {"id": "founder-1"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    first = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_010,
+    )
+
+    payload["webhookId"] = "hook-stop-2"
+    payload["webhookTimestamp"] = 1_700_000_000_011
+    second_body = json.dumps(payload).encode("utf-8")
+    second = service.handle_webhook(
+        second_body,
+        {"Linear-Signature": create_signature(b"webhook-secret", second_body)},
+        now_ms=1_700_000_000_011,
+    )
+
+    assert first.status == "accepted"
+    assert second.status == "accepted"
+    assert model.calls == 0
+    assert "stop signal" in clients[0].activities[1][1]["body"]
+    assert clients[0].activities[1][1]["body"] == clients[1].activities[1][1]["body"]
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_repeated_logical_delivery_reuses_advisory_without_second_model_call(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+    model = CountingModel()
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=model,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    first_payload = event_payload()
+    first_payload["webhookId"] = "hook-advisory-1"
+    first_body = json.dumps(first_payload).encode("utf-8")
+
+    second_payload = event_payload()
+    second_payload["webhookId"] = "hook-advisory-2"
+    second_payload["webhookTimestamp"] = 1_700_000_000_100
+    second_body = json.dumps(second_payload).encode("utf-8")
+
+    first = service.handle_webhook(
+        first_body,
+        {"Linear-Signature": create_signature(b"webhook-secret", first_body)},
+        now_ms=1_700_000_000_000,
+    )
+    second = service.handle_webhook(
+        second_body,
+        {"Linear-Signature": create_signature(b"webhook-secret", second_body)},
+        now_ms=1_700_000_000_100,
+    )
+
+    assert first.status == "accepted"
+    assert second.status == "accepted"
+    assert model.calls == 1
+    assert clients[0].activities[1][1]["body"] == clients[1].activities[1][1]["body"]
     installation_store.close()
     receipt_store.close()
 

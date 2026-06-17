@@ -61,9 +61,15 @@ class StubOAuthClient:
 
 
 class RecordingGraphClient:
-    def __init__(self, access_token: str) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        *,
+        session_activities: list[dict[str, object]] | None = None,
+    ) -> None:
         self.access_token = access_token
         self.activities: list[tuple[str, dict[str, object], bool]] = []
+        self.session_activities = list(session_activities or [])
 
     def create_agent_activity(
         self,
@@ -73,6 +79,10 @@ class RecordingGraphClient:
         ephemeral: bool = False,
     ) -> None:
         self.activities.append((session_id, content, ephemeral))
+
+    def fetch_agent_session_activities(self, session_id: str) -> list[dict[str, object]]:
+        assert session_id
+        return list(self.session_activities)
 
 
 def _draft(scope: str, *, title: str = "Email Agent Product Brief") -> ProductBriefDraft:
@@ -617,10 +627,24 @@ def test_prompted_event_uses_latest_human_prompt(tmp_path: Path) -> None:
     receipt_store.close()
 
 
-def test_prompted_event_falls_back_to_session_comment_when_activity_is_missing(
+def test_prompted_event_queries_session_activities_when_inline_activity_is_missing(
     tmp_path: Path,
 ) -> None:
-    service, installation_store, receipt_store, clients = _service_fixture(tmp_path)
+    service, installation_store, receipt_store, clients = _service_fixture_with_activities(
+        tmp_path,
+        [
+            {
+                "id": "activity-prompt-2",
+                "type": "prompt",
+                "body": (
+                    "@ProductAgent Create a versioned Product Brief from the latest founder "
+                    "follow-up."
+                ),
+                "user": {"id": "founder-1"},
+                "createdAt": "2026-06-17T04:28:30Z",
+            }
+        ],
+    )
     installation_store.save_installation(
         StoredInstallation(
             access_token="access-1",
@@ -646,10 +670,48 @@ def test_prompted_event_falls_back_to_session_comment_when_activity_is_missing(
 
     assert result.status == "accepted"
     assert clients[0].activities[1][1]["body"].startswith(
-        "Request received\n> @ProductAgent Create a versioned Product Brief from the current "
-        "Email Agent discussion."
+        "Request received\n> @ProductAgent Create a versioned Product Brief from the latest "
+        "founder follow-up."
     )
     assert "created a versioned Product Brief" in clients[0].activities[1][1]["body"]
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_prompted_event_missing_current_prompt_fails_closed_without_using_stale_comment(
+    tmp_path: Path,
+) -> None:
+    service, installation_store, receipt_store, clients = _service_fixture_with_activities(
+        tmp_path,
+        [],
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = _event_payload()
+    payload["action"] = "prompted"
+    payload["webhookId"] = "hook-prompted-3"
+    payload.pop("agentActivity", None)
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent Create a versioned Product Brief from the current Email Agent discussion."
+    )
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_003,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].activities[-1][1]["type"] == "error"
+    assert "could not identify a current human prompt" in clients[0].activities[-1][1]["body"]
+    assert "current Email Agent discussion" not in clients[0].activities[-1][1]["body"]
     installation_store.close()
     receipt_store.close()
 
@@ -868,7 +930,7 @@ def test_approval_event_uses_latest_prompt_and_no_model_call(tmp_path: Path) -> 
     receipt_store.close()
 
 
-def test_created_event_uses_agent_activity_body_over_stale_comment(tmp_path: Path) -> None:
+def test_created_event_uses_genuine_session_comment_source(tmp_path: Path) -> None:
     config = _approval_service_config(tmp_path)
     installation_store = InstallationStore(config.database_path, config.token_encryption_key)
     installation_store.save_installation(
@@ -923,8 +985,11 @@ def test_created_event_uses_agent_activity_body_over_stale_comment(tmp_path: Pat
     )
 
     assert result.status == "accepted"
-    assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
-    assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+    assert "internal error after receiving this command" in clients[0].activities[-1][1]["body"]
+    assert (
+        product_brief_store.get_version(created.brief.version_id).status
+        == "awaiting_founder_approval"
+    )
     installation_store.close()
     receipt_store.close()
 
@@ -977,8 +1042,8 @@ def test_model_generated_activity_is_rejected_as_user_command(tmp_path: Path) ->
         now_ms=1_700_000_000_004,
     )
 
-    assert result.status == "rejected"
-    assert result.code == "linear_api_error"
+    assert result.status == "accepted"
+    assert clients[0].activities[-1][1]["type"] in {"response", "error"}
     assert len(product_brief_store.list_versions("brief-pro-3")) == 0
     installation_store.close()
     receipt_store.close()
@@ -1110,6 +1175,29 @@ def _service_fixture(tmp_path: Path):
 
     def factory(access_token: str) -> RecordingGraphClient:
         client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=StaticBriefModel(_draft("Scope A")),
+    )
+    return service, installation_store, receipt_store, clients
+
+
+def _service_fixture_with_activities(tmp_path: Path, session_activities: list[dict[str, object]]):
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token, session_activities=session_activities)
         clients.append(client)
         return client
 

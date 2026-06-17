@@ -10,7 +10,7 @@ from ai_native_studio.product_agent_proof.approval import SyntheticApprovalRecor
 from ai_native_studio.product_agent_proof.dedup import ReceiptResult, WebhookReceiptStore
 
 from .config import LiveProductAgentConfig
-from .models import StoredInstallation
+from .models import StoredCommandOutcome, StoredInstallation
 from .product_briefs import (
     ProductBriefApprovalRecord,
     ProductBriefOperationRecord,
@@ -84,6 +84,16 @@ class RequestProvenanceStoreProtocol(Protocol):
     def create(self, invocation_id: str, provenance: RequestProvenance) -> bool: ...
 
     def get(self, invocation_id: str) -> RequestProvenance | None: ...
+
+    def close(self) -> None: ...
+
+
+class CommandOutcomeStoreProtocol(Protocol):
+    def get(self, operation_key: str) -> StoredCommandOutcome | None: ...
+
+    def create(self, outcome: StoredCommandOutcome) -> bool: ...
+
+    def list_for_session(self, session_id: str) -> list[StoredCommandOutcome]: ...
 
     def close(self) -> None: ...
 
@@ -508,6 +518,50 @@ class FirestoreRequestProvenanceStore(InMemoryRequestProvenanceStore):
         super().__init__(document_store, collection_prefix=collection_prefix)
 
 
+class InMemoryCommandOutcomeStore:
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol | None = None,
+        *,
+        collection_prefix: str = "product_agent_live",
+    ) -> None:
+        self._document_store = document_store or InMemoryDocumentStore()
+        self._collection = f"{collection_prefix}_command_outcomes"
+
+    def get(self, operation_key: str) -> StoredCommandOutcome | None:
+        payload = self._document_store.get_document(self._collection, operation_key)
+        return None if payload is None else StoredCommandOutcome.model_validate(payload)
+
+    def create(self, outcome: StoredCommandOutcome) -> bool:
+        return self._document_store.create_document(
+            self._collection,
+            outcome.operation_key,
+            outcome.model_dump(),
+        )
+
+    def list_for_session(self, session_id: str) -> list[StoredCommandOutcome]:
+        payloads = self._document_store.list_documents(self._collection)
+        outcomes = [
+            StoredCommandOutcome.model_validate(payload)
+            for payload in payloads
+            if payload.get("session_id") == session_id
+        ]
+        return sorted(outcomes, key=lambda outcome: outcome.processed_at_ms)
+
+    def close(self) -> None:
+        self._document_store.close()
+
+
+class FirestoreCommandOutcomeStore(InMemoryCommandOutcomeStore):
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol,
+        *,
+        collection_prefix: str,
+    ) -> None:
+        super().__init__(document_store, collection_prefix=collection_prefix)
+
+
 def build_installation_store(config: LiveProductAgentConfig) -> InstallationStoreProtocol:
     if config.storage_backend == "firestore":
         return FirestoreInstallationStore(
@@ -573,3 +627,17 @@ def build_request_provenance_store(
             collection_prefix=config.firestore_collection_prefix,
         )
     return InMemoryRequestProvenanceStore(collection_prefix=config.firestore_collection_prefix)
+
+
+def build_command_outcome_store(
+    config: LiveProductAgentConfig,
+) -> CommandOutcomeStoreProtocol:
+    if config.storage_backend == "firestore":
+        return FirestoreCommandOutcomeStore(
+            FirestoreDocumentStore(
+                project_id=config.firestore_project_id,
+                database_id=config.firestore_database_id,
+            ),
+            collection_prefix=config.firestore_collection_prefix,
+        )
+    return InMemoryCommandOutcomeStore(collection_prefix=config.firestore_collection_prefix)
