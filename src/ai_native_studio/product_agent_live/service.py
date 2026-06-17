@@ -369,6 +369,7 @@ class LiveProductAgentService:
             cached_outcome = self._command_outcome_store.get(operation_key)
             live_comment = event.agent_session.comment
             live_agent_activity = event.agent_activity
+            live_prompt_context = event.agent_session.prompt_context
             log_event(
                 "conversation_turn_resolved",
                 session_id=event.agent_session.id,
@@ -395,6 +396,13 @@ class LiveProductAgentService:
                         ).encode("utf-8")
                     ).hexdigest()[:12]
                     if self._activity_instruction(live_agent_activity)
+                    else None
+                ),
+                live_prompt_context_sha256=(
+                    hashlib.sha256(
+                        " ".join(live_prompt_context.split()).encode("utf-8")
+                    ).hexdigest()[:12]
+                    if live_prompt_context.strip()
                     else None
                 ),
             )
