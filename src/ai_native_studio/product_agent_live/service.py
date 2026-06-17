@@ -1106,6 +1106,9 @@ class LiveProductAgentService:
             "session_id": command.agent_session_id,
             "source_activity_id": command.source_agent_activity_id,
             "source_comment_id": command.source_comment_id,
+            "instruction_fingerprint": hashlib.sha256(
+                " ".join(command.exact_current_instruction.split()).encode("utf-8")
+            ).hexdigest()[:20],
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return "cmd-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]

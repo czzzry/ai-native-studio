@@ -441,6 +441,91 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
     receipt_store.close()
 
 
+def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_reuse_cached_outcome(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    model = RecordingAdvisoryModel()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=model,
+    )
+
+    first_payload = event_payload()
+    first_payload["webhookId"] = "hook-follow-up-cache-1"
+    first_payload["webhookTimestamp"] = 1_700_000_000_200
+    first_payload["agentSession"]["comment"]["body"] = (
+        "This thread is for an agent session with productagent."
+    )
+    first_payload["agentSession"]["previousComments"] = [
+        {
+            "id": "comment-shared-source",
+            "body": "User: make this a narrow plan for a single workflow.",
+            "userId": "founder-1",
+        }
+    ]
+    first_body = json.dumps(first_payload, separators=(",", ":"), sort_keys=True).encode()
+
+    second_payload = event_payload()
+    second_payload["webhookId"] = "hook-follow-up-cache-2"
+    second_payload["webhookTimestamp"] = 1_700_000_000_300
+    second_payload["agentSession"]["comment"]["body"] = (
+        "This thread is for an agent session with productagent."
+    )
+    second_payload["agentSession"]["previousComments"] = [
+        {
+            "id": "comment-shared-source",
+            "body": (
+                "User: make this a narrow plan for a single workflow, and exclude bulk actioning."
+            ),
+            "userId": "founder-1",
+        }
+    ]
+    second_body = json.dumps(second_payload, separators=(",", ":"), sort_keys=True).encode()
+
+    first = service.handle_webhook(
+        first_body,
+        {"Linear-Signature": create_signature(b"webhook-secret", first_body)},
+        now_ms=1_700_000_000_200,
+    )
+    second = service.handle_webhook(
+        second_body,
+        {"Linear-Signature": create_signature(b"webhook-secret", second_body)},
+        now_ms=1_700_000_000_300,
+    )
+
+    assert first.status == "accepted"
+    assert second.status == "accepted"
+    assert len(model.requests) == 2
+    assert model.requests[0].untrusted_product_input != model.requests[1].untrusted_product_input
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_unconfigured_health_and_oauth_routes_are_safe(tmp_path: Path) -> None:
     live_config = LiveProductAgentConfig(
         app_env="test",
