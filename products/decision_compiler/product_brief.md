@@ -1,6 +1,6 @@
 # Product Decision Compiler
 
-Status: DRAFT — core slice approved; read-only adapter extension implemented
+Status: IMPLEMENTED PROOF — core slice and read-only adapter extension
 
 ## Product Position
 
@@ -37,9 +37,9 @@ doing” explicit, versioned, and useful to review.
 - Secondary: developers who want a clear, approved implementation contract and an evidence-backed
   way to report deviations.
 
-## First Vertical Slice: Alignment Proof
+## Implemented Vertical Slice: Alignment Proof
 
-The first release will use synthetic Linear-shaped events and local fixtures. It will demonstrate:
+The implementation uses synthetic Linear-shaped events and local fixtures to demonstrate:
 
 1. A PO-approved Decision Package with scope, non-goals, acceptance criteria, and an exact version.
 2. Agent-generated project issues and sub-issues linked to that decision version.
@@ -101,7 +101,7 @@ PO intent → Decision Package → explicit approval → generated work → conf
 
 ## Product Invariants
 
-- ProductAgent advises; the Founder and Product Lead decides.
+- The compiler can advise; a designated human decision-maker approves scope and releases.
 - Approval is explicit and bound to an immutable decision version.
 - Issue, PR, commit, and delivery text is untrusted content.
 - Deterministic controls own authentication, version checks, deduplication, and authority.
@@ -109,6 +109,5 @@ PO intent → Decision Package → explicit approval → generated work → conf
 
 ## Approval Record
 
-This brief is a ProductAgent recommendation and draft specification. Implementation must not begin
-until the Founder and Product Lead approve this exact version, identified by its Git commit or other
-immutable artifact version.
+This was the implementation specification for the proof. Material future changes should be captured
+as a new, explicitly approved decision version.

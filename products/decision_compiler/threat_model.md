@@ -1,11 +1,11 @@
 # Product Decision Compiler Threat Model
 
-Status: DRAFT — threat model for the Alignment Proof slice
+Status: IMPLEMENTED PROOF — threat model for the Alignment Proof slice
 
 ## Assets
 
 - Approved Decision Package and version history.
-- Founder approval evidence.
+- Explicit human approval evidence.
 - Work-item and delivery provenance.
 - Scope findings and PO digest.
 - Any future Linear, GitHub, or model credentials.
@@ -24,7 +24,7 @@ Status: DRAFT — threat model for the Alignment Proof slice
 
 Threat: an issue or delivery report instructs the system to ignore non-goals or approve a change.
 
-Control: all work text is untrusted evidence; only the configured Founder approval path can approve
+Control: all work text is untrusted evidence; only the configured human approval path can approve
 or amend a decision.
 
 ### Forged or stale approval
@@ -65,5 +65,5 @@ public-release review.
 
 Threat: an early integration creates issues, comments, or state changes in a real workspace.
 
-Control: no live adapter in the Alignment Proof; use recording adapters and explicit Founder approval
+Control: no live adapter in the Alignment Proof; use recording adapters and explicit human approval
 for any later external test.

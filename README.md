@@ -1,55 +1,54 @@
 # Product Decision Compiler
 
-> AI can make software cheap to produce. This keeps product decisions expensive to ignore.
-
-Product Decision Compiler is a small, runnable proof for product owners and PMs working with
-AI-first engineering teams.
-
-It answers one practical question:
+> A decision layer for AI-assisted software delivery.
 
 **Is the work still the thing we agreed to build?**
 
-## Why this exists
+Product Decision Compiler is a runnable, read-only proof for product owners, PMs, and engineering
+teams working with fast-moving AI-assisted development. It turns one approved product decision into
+a versioned contract, connects Linear and GitHub work to that contract, and brings only meaningful
+exceptions back for human review.
 
-When agents can create issues, pull requests, and commits all day, activity grows faster than
-attention. A PO should not have to read every update or trust every polished summary.
+Python · Pydantic · Linear GraphQL · GitHub REST · deterministic conformance rules
 
-This project turns an approved product decision into a durable contract. It then checks agent-shaped
-work against that contract and surfaces only what needs human judgment: scope drift, risk, or missing
-delivery evidence.
+## Start with the evidence
 
-The goal is not more activity. The goal is a quieter, more useful product review.
+![Interactive evidence review](docs/demo/evidence-review.png)
 
-## The loop
+The [evidence review source](docs/demo/index.html) makes the product claim concrete: one onboarding
+decision, the linked work, and three findings that deserve a product owner’s attention. It is backed
+by the same synthetic provider evidence used by the local integration proof—rather than invented
+dashboard activity.
 
-```text
-PO intent → Decision Package → Founder approval → AI-built work → PO digest
+This repository favours a small, inspectable proof over a broad product pitch. A reviewer can:
+
+- open the evidence review above and trace a finding back to its decision link;
+- run two local demos without accounts, secrets, or network access; and
+- inspect the read-only adapters and regression tests that support the claim.
+
+To use the interactive review locally from the repository root:
+
+```bash
+python3 -m http.server 4173 --directory docs/demo
 ```
 
-The compiler does not approve its own interpretation, rewrite scope, create tickets, add comments,
-or release software. People still decide.
+Then open [localhost:4173](http://localhost:4173).
 
-## What works today
+## The idea
 
-The local proof can:
+AI can produce issues, pull requests, and commits faster than a product owner can read them. An
+activity feed is not product control. The useful question is whether work still conforms to a
+decision that a person explicitly approved.
 
-- turn structured product intent into a versioned Decision Package
-- record approval for one exact decision version
-- identify aligned work, scope expansion, clarification, security risk, and contradictions
-- connect delivery evidence to acceptance criteria
-- reject duplicate events, replay conflicts, stale versions, and embedded instructions such as
-  “approve this”
-- suppress routine aligned activity and produce a short PO digest
+```text
+Product intent → approved decision → linked work → delivery evidence → human review
+```
 
-The real-provider adapters are deliberately read-only:
+The compiler deliberately does not approve its own interpretation, change scope, create or edit
+provider records, or release software. It makes the boundary visible; people remain accountable for
+the decision.
 
-- Linear: reads linked issues and sub-issues
-- GitHub: reads linked issues, pull requests, commits, changed files, and check runs
-- Issues and pull requests: require an explicit marker such as `decision:onboarding-improvement-v1`
-- GitHub commits: can carry their own marker or inherit the link from a marked pull request
-- Neither: creates, updates, comments on, labels, or moves anything
-
-## See it in a minute
+## Run the proof
 
 ```bash
 python3 -m venv .venv
@@ -58,66 +57,64 @@ python3 -m venv .venv
 .venv/bin/product-decision-compiler-integrations-demo
 ```
 
-The first command runs the core proof with synthetic Linear-shaped work. The second runs the
-read-only Linear and GitHub adapters against synthetic provider responses, so it needs no accounts,
-network access, or secrets.
-
-You should see a PO digest rather than an activity feed:
+The first demo exercises the core decision-conformance flow. The second uses synthetic Linear and
+GitHub responses to prove the read-only adapters, so it needs no provider accounts, credentials, or
+network connection. It produces a concise product-owner digest, not an activity stream:
 
 ```text
 3 finding(s) require PO attention
 • risk / high — Work touches a security-sensitive area outside the decision.
 ```
 
-Run the full test suite with:
+Run the tests with:
 
 ```bash
 .venv/bin/python -m pytest -p no:cacheprovider tests
 ```
 
-## Using real read-only data
+## What works today
 
-The adapters are small Python building blocks, not a hosted app. They accept `LINEAR_API_KEY` and
-an optional `GITHUB_TOKEN`, fetch up to 100 records per call, and return the same evidence models
-used by the offline proof. The Linear adapter takes a Linear team ID.
+- creates a versioned Decision Package from structured product intent and records explicit approval
+  for one exact version;
+- classifies linked work as aligned, scope expansion, clarification, security risk, or contradiction;
+- connects delivery evidence to acceptance criteria and flags missing evidence;
+- rejects duplicate events, replay conflicts, stale versions, and embedded instructions such as
+  “approve this”; and
+- suppresses routine aligned activity so the digest is reserved for things worth human attention.
 
-The intended flow is:
+The Linear and GitHub adapters are deliberately read-only. They can discover linked issues,
+sub-issues, pull requests, commits, changed files, and check runs, but they cannot create, update,
+comment on, label, move, merge, or release anything. Links are explicit:
+`decision:onboarding-improvement-v1`.
 
-1. Approve a Decision Package.
-2. Put its marker in the Linear issue or GitHub issue/PR body.
-3. Read the provider records with the adapter.
-4. Pass the normalised evidence to `ConformanceEngine`.
-5. Give the resulting digest to the PO.
+## Using real data
 
-No provider write scope is needed for this stage.
+The adapters are small Python building blocks, not a hosted app. Provide `LINEAR_API_KEY` and an
+optional `GITHUB_TOKEN`, read the relevant provider records, normalise them into the same evidence
+models used by the demos, and pass them to `ConformanceEngine`. No provider write scope is required.
 
-## Design in one sentence
+The [architecture](products/decision_compiler/architecture.md) explains the boundary and the
+[evaluation plan](products/decision_compiler/eval_plan.md) states what the proof checks.
 
-**AI can help frame the decision; deterministic code guards it; a human remains the authority.**
+## Deliberate limits
 
-That boundary is the point of the project. The compiler itself does not need a model to prove the
-workflow, which keeps the important checks repeatable and inspectable.
+This is an engineering proof, not a production release gate, autonomous PM, chatbot, or hosted
+Linear/GitHub integration. Production authentication, scheduling, webhook processing, full
+pagination, and durable external storage are deliberately outside this repository’s scope.
 
-## What this is — and is not
+## Explore the work
 
-This is an open engineering proof of a product-operations idea. It is not a production release gate,
-an autonomous PM, a chatbot, or a live hosted Linear/GitHub application. Authentication, scheduling,
-pagination beyond the first page, webhook processing, and a durable external store remain follow-on
-work.
-
-## Read the evidence
-
-- [Product Decision Compiler brief](products/decision_compiler/product_brief.md)
+- [Interactive evidence review](docs/demo/index.html)
+- [Product brief](products/decision_compiler/product_brief.md)
 - [Architecture](products/decision_compiler/architecture.md)
 - [Acceptance criteria](products/decision_compiler/acceptance_criteria.yaml)
 - [Evaluation plan](products/decision_compiler/eval_plan.md)
-- [Public product write-up](docs/public/product-decision-compiler.md)
-- [Read-only adapter code](src/ai_native_studio/product_decision_compiler/integrations.py)
+- [Read-only Linear/GitHub adapters](src/ai_native_studio/product_decision_compiler/integrations.py)
 - [Tests](tests/product_decision_compiler/)
 
-The repository also contains the earlier ProductAgent foundation. It is useful context, but the
-Product Decision Compiler is the public centre of gravity.
+The repository also includes the earlier ProductAgent foundation. It remains as context; Product
+Decision Compiler is the public centre of gravity.
 
 ## License
 
-MIT. Use it, change it, build on it, or sell it. Keep the copyright and license notice with it.
+[MIT](LICENSE) — use it, change it, build on it, or sell it. Keep the copyright and license notice.

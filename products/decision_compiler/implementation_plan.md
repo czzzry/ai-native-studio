@@ -1,12 +1,12 @@
 # Product Decision Compiler Implementation Plan
 
-Status: DRAFT — Founder-approved implementation through the read-only adapter slice
+Status: COMPLETED PROOF — retained as the execution record for the read-only adapter slice
 
 ## Phase 0: Approve the Slice
 
 Deliverables:
 
-- Founder approval of `product_brief.md` and `acceptance_criteria.yaml`.
+- Explicit human approval of `product_brief.md` and `acceptance_criteria.yaml`.
 - Approval recorded against the immutable commit or artifact version.
 - Any material change requires renewed approval.
 
@@ -80,7 +80,7 @@ Deliverables after verification:
 - History and repository metadata review for personal information.
 - Read-only Linear and GitHub adapter code with synthetic provider responses.
 
-Exit condition: Founder approves publication of the verified public slice.
+Exit condition: a human owner approves publication of the verified public slice.
 
 ## Phase 7: Read-only Provider Adapters
 

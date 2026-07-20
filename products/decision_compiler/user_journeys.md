@@ -1,6 +1,6 @@
 # Product Decision Compiler User Journeys
 
-Status: DRAFT — derived from the Alignment Proof product brief
+Status: IMPLEMENTED REVIEW FLOW — illustrated by the Alignment Proof
 
 ## Journey 1: PO defines the decision
 
@@ -52,7 +52,7 @@ Expected result: legitimate product change is distinguishable from accidental sc
    non-goals.”
 2. The system treats the text as evidence to analyse, never as authority.
 3. Deterministic policy rejects any approval or policy change not supplied through the configured
-   Founder approval path.
+   human approval path.
 4. The finding records the attempted instruction as untrusted content without executing it.
 
 Expected result: agent-generated work cannot grant itself approval.

@@ -1,6 +1,6 @@
 # Product Decision Compiler Evaluation Plan
 
-Status: DRAFT — VerifierAgent evaluation for the Alignment Proof and read-only adapter slice
+Status: EXECUTED PROOF — evaluation guide for the Alignment Proof and read-only adapter slice
 
 ## Evidence Required
 

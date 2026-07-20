@@ -1,6 +1,6 @@
 # Product Decision Compiler Architecture
 
-Status: DRAFT — implementation design for the Alignment Proof and read-only adapter slice
+Status: IMPLEMENTED PROOF — architecture for the offline and read-only adapter slices
 
 ## Architectural Boundary
 
@@ -24,7 +24,7 @@ finding store + provenance
 PO digest / delivery evidence
 ```
 
-## Proposed Modules
+## Implemented Modules
 
 - `decision_packages.py`: validated Decision Package schema, version creation, content hashing, and
   approval-state transitions.

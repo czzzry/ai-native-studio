@@ -1,6 +1,6 @@
 product: product_decision_compiler
 release_stage: alignment_proof
-status: draft
+status: implemented_proof
 criteria:
   - id: PDC-ALIGN-001
     area: decision_package
@@ -8,7 +8,7 @@ criteria:
     required: true
   - id: PDC-ALIGN-002
     area: approval
-    statement: Approval is explicit, authenticated through the configured Founder path, and bound to the exact Decision Package version.
+    statement: Approval is explicit, authenticated through the configured human approval path, and bound to the exact Decision Package version.
     required: true
   - id: PDC-ALIGN-003
     area: provenance
