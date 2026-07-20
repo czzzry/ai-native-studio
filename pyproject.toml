@@ -1,7 +1,7 @@
 [project]
 name = "ai-native-studio"
 version = "0.1.0"
-description = "AI-native product-development operating system for a solo founder."
+description = "Read-only decision alignment for AI-first product teams."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -23,6 +23,7 @@ product-agent-intelligence-demo = "ai_native_studio.product_agent_proof.intellig
 product-agent-server = "ai_native_studio.product_agent_proof.server:main"
 product-agent-live-server = "ai_native_studio.product_agent_live.server:main"
 product-decision-compiler-demo = "ai_native_studio.product_decision_compiler.demo:main"
+product-decision-compiler-integrations-demo = "ai_native_studio.product_decision_compiler.integration_demo:main"
 
 [tool.setuptools.package-data]
 "ai_native_studio.product_agent_proof" = ["config/*.json", "config/*.md"]

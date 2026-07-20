@@ -50,6 +50,18 @@ criteria:
     area: handoff
     statement: The demo produces human-readable evidence showing the original decision, generated work, findings, digest, and delivery report in one traceable flow.
     required: true
+  - id: PDC-ALIGN-013
+    area: readonly_integrations
+    statement: Read-only Linear and GitHub adapters fetch issues, sub-issues, pull requests, commits, changed files, and check runs without exposing provider write operations.
+    required: true
+  - id: PDC-ALIGN-014
+    area: decision_linking
+    statement: External records are matched only through an explicit decision marker, and records naming a stale version remain available for deterministic stale-version findings.
+    required: true
+  - id: PDC-ALIGN-015
+    area: provider_normalisation
+    statement: Linked Linear and GitHub records are normalised into the same WorkItemEvidence and DeliveryReport contracts used by the offline conformance engine.
+    required: true
 release_gates:
   required_criteria_pass_rate: 1.0
   prompt_injection_pass_rate: 1.0

@@ -1,236 +1,123 @@
-# ai-native-studio
+# Product Decision Compiler
 
-> The decision layer between product intent and AI-built software.
+> AI can make software cheap to produce. This keeps product decisions expensive to ignore.
 
-`ai-native-studio` is a workflow-design repository for a founder-led AI product operating model.
-The strongest implemented slice today is `Product Decision Compiler`: an alignment layer that turns
-PO intent into an approved decision, checks agent-generated work against that decision, and reports
-only meaningful scope drift or missing delivery evidence.
+Product Decision Compiler is a small, runnable proof for product owners and PMs working with
+AI-first engineering teams.
 
-The repository also contains the earlier `ProductAgent` foundation: a bounded product workflow agent
-that turns messy product requests into versioned product briefs without letting the model approve
-scope, commission implementation, or act as final authority.
+It answers one practical question:
 
-This is not a general-purpose agent platform and it is not a production-ready email agent. It is a
-repository for proving where AI helps in a product workflow and where deterministic controls must
-stay in charge.
+**Is the work still the thing we agreed to build?**
 
-## Problem This Project Solves
+## Why this exists
 
-Early product discussions are often ambiguous, over-scoped, and weakly documented. A useful product
-workflow needs more than generated text. It needs:
+When agents can create issues, pull requests, and commits all day, activity grows faster than
+attention. A PO should not have to read every update or trust every polished summary.
 
-- a clear intake boundary for untrusted product input
-- structured outputs that can be reviewed and versioned
-- explicit approval gates before engineering work starts
-- repeatable handling for duplicates, stale events, and unauthorized actions
+This project turns an approved product decision into a durable contract. It then checks agent-shaped
+work against that contract and surfaces only what needs human judgment: scope drift, risk, or missing
+delivery evidence.
 
-This repository explores that boundary. Product Decision Compiler and ProductAgent are intentionally
-advisory: they can question, frame, draft, and evaluate, but they cannot approve their own output or
-trigger implementation without a separate Founder approval record.
+The goal is not more activity. The goal is a quieter, more useful product review.
 
-## Current Working Slice
+## The loop
 
-The current runnable slice is the offline Product Decision Compiler Alignment Proof. It uses
-synthetic Linear-shaped Projects, Issues, Sub-issues, pull requests, and delivery reports.
-
-What works today:
-
-- create a versioned Decision Package with scope, non-goals, acceptance criteria, risks, and metrics
-- record explicit Founder approval for one exact decision version
-- evaluate generated work as aligned, clarification, scope expansion, risk, or contradiction
-- evaluate delivery reports for missing acceptance evidence and out-of-scope changes
-- suppress routine aligned activity and produce a concise PO digest
-- reject duplicate evidence, replay conflicts, stale decision versions, and prompt-injection text
-- run the complete proof offline with deterministic fixtures and no external calls
-
-The earlier ProductAgent proof remains available as a separate foundation and demonstrates signed
-synthetic webhook intake, HMAC verification, timestamp freshness, identity routing, and structured
-advisory output.
-
-What has separate evidence but is not the default public demo:
-
-- a documented private smoke test for the live approval path on Cloud Run and Firestore
-- local live-service code for OAuth, webhook intake, storage, and Linear activity publishing
-
-The safest public claim is: the local proof is runnable now, and the live approval path has a
-documented milestone note, but this repository does not provide a one-command public recreation of
-the private live environment.
-
-## High-Level Architecture
-
-The current ProductAgent slice has four main layers:
-
-1. Ingress and validation
-   Synthetic Linear-shaped events enter through a small HTTP/service boundary. Signature, freshness,
-   routing, and duplicate checks happen before any advisory logic.
-2. Deterministic policy
-   Founder authority, approval eligibility, implementation blocking, and prompt-injection handling
-   are enforced with code, not delegated to the model.
-3. Advisory intelligence
-   A provider-neutral interface produces structured product advice. The default demo uses a
-   deterministic fake provider so the workflow can be exercised offline and repeatably.
-4. Recording and response
-   The system assigns a stable specification version, records approval evidence for the synthetic
-   flow, and returns a structured Founder-facing response.
-
-Key references:
-
-- [Product Decision Compiler brief](products/decision_compiler/product_brief.md)
-- [Alignment Proof architecture](products/decision_compiler/architecture.md)
-- [Alignment Proof acceptance criteria](products/decision_compiler/acceptance_criteria.yaml)
-- [Alignment Proof evaluation plan](products/decision_compiler/eval_plan.md)
-- [Local ProductAgent proof](products/studio_agents/README.md)
-- [Architecture notes](products/studio_agents/architecture.md)
-- [Live milestone note](docs/milestones/product-agent-v0.1.md)
-- [Public case-study draft](docs/public/product-agent-v0.1-public.md)
-
-## Where AI Is Used and Where Deterministic Logic Is Used
-
-| Area | AI / model-driven | Deterministic code |
-|---|---|---|
-| Product framing | Drafts questions, recommendations, scope, risks, and acceptance criteria | Rejects malformed output and requires a fixed response schema |
-| Scope alignment | May interpret whether natural-language work relates to product intent | Version checks, finding schema, evidence hashing, digest policy |
-| Authority | None | Founder approval rules, version checks, self-approval refusal, implementation blocking |
-| Security | None | HMAC verification, timestamp freshness, replay handling, identity routing |
-| Workflow state | None | Specification versioning, duplicate detection, approval recording, response modes |
-| Demo execution | Optional real provider adapter exists | Default demo runs with a deterministic fake provider and no network calls |
-
-This split is the core point of the repo: AI is used for advisory synthesis, while operational
-control stays deterministic.
-
-## Product Decision Compiler Workflow
-
-One verified local workflow looks like this:
-
-1. A PO request becomes a Decision Package with explicit scope and non-goals.
-2. The Founder approves the exact version.
-3. Synthetic agent-generated work is linked to that decision version.
-4. The evaluator checks issues and delivery evidence against the decision.
-5. The PO receives a quiet digest containing only scope drift, risks, or missing evidence.
-6. The PO can accept the result, investigate, or create a new decision version.
-
-This is a product-operations workflow slice, not an activity-feed or chatbot demo. The emphasis is
-on the contract between product intent and AI-assisted execution.
-
-## Run the Alignment Proof
-
-After installing the local development environment, run:
-
-```bash
-.venv/bin/product-decision-compiler-demo
+```text
+PO intent → Decision Package → Founder approval → AI-built work → PO digest
 ```
 
-The demo produces an approved Decision Package, four work-item findings, a missing-evidence finding,
-duplicate and stale-version rejections, and a concise PO digest. It makes no Linear, GitHub, Gmail,
-or model-provider calls.
+The compiler does not approve its own interpretation, rewrite scope, create tickets, add comments,
+or release software. People still decide.
 
-If the demo works, the useful output is not “the agent did more work.” It is “the PO can see exactly
-where the work no longer matches the decision.”
+## What works today
 
-## Demo Artifacts
+The local proof can:
 
-This repository already includes documentation artifacts that are useful in a portfolio review:
+- turn structured product intent into a versioned Decision Package
+- record approval for one exact decision version
+- identify aligned work, scope expansion, clarification, security risk, and contradictions
+- connect delivery evidence to acceptance criteria
+- reject duplicate events, replay conflicts, stale versions, and embedded instructions such as
+  “approve this”
+- suppress routine aligned activity and produce a short PO digest
 
-- [Local ProductAgent proof README](products/studio_agents/README.md)
-- [ProductAgent architecture](products/studio_agents/architecture.md)
-- [ProductAgent MVP v0.1 milestone](docs/milestones/product-agent-v0.1.md)
-- [Public-facing ProductAgent case study draft](docs/public/product-agent-v0.1-public.md)
-- [Email Agent product brief](products/email_agent/product_brief.md)
-- [Product Decision Compiler product brief](products/decision_compiler/product_brief.md)
-- [Product Decision Compiler implementation plan](products/decision_compiler/implementation_plan.md)
+The real-provider adapters are deliberately read-only:
 
-There are no polished UI screenshots in this repo. The evidence is in the runnable local proof,
-tests, and design documentation.
+- Linear: reads linked issues and sub-issues
+- GitHub: reads linked issues, pull requests, commits, changed files, and check runs
+- Issues and pull requests: require an explicit marker such as `decision:onboarding-improvement-v1`
+- GitHub commits: can carry their own marker or inherit the link from a marked pull request
+- Neither: creates, updates, comments on, labels, or moves anything
 
-## Setup and Run
-
-These instructions are for the offline proofs, which are the slices that are safe to run publicly.
-
-Create the local environment:
+## See it in a minute
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
-```
-
-Run the local proof demo:
-
-```bash
-.venv/bin/product-agent-demo
-```
-
-Run the advisory-intelligence demo:
-
-```bash
-.venv/bin/python -m ai_native_studio.product_agent_proof.intelligence_demo
-```
-
-Run the Product Decision Compiler Alignment Proof:
-
-```bash
 .venv/bin/product-decision-compiler-demo
+.venv/bin/product-decision-compiler-integrations-demo
 ```
 
-Run the relevant tests:
+The first command runs the core proof with synthetic Linear-shaped work. The second runs the
+read-only Linear and GitHub adapters against synthetic provider responses, so it needs no accounts,
+network access, or secrets.
+
+You should see a PO digest rather than an activity feed:
+
+```text
+3 finding(s) require PO attention
+• risk / high — Work touches a security-sensitive area outside the decision.
+```
+
+Run the full test suite with:
 
 ```bash
 .venv/bin/python -m pytest -p no:cacheprovider tests
 ```
 
-Notes:
+## Using real read-only data
 
-- The demo path uses synthetic fixtures and the deterministic fake provider by default.
-- The Alignment Proof uses deterministic conformance rules and synthetic Linear-shaped work by
-  default.
-- The repository also contains a live-service path, but running that safely requires explicit local
-  configuration in `.env` and private secrets that are not part of the public quickstart.
-- In this documentation pass, the demo and test commands above were re-verified in the existing
-  local environment. A clean-machine bootstrap was not re-run from scratch.
+The adapters are small Python building blocks, not a hosted app. They accept `LINEAR_API_KEY` and
+an optional `GITHUB_TOKEN`, fetch up to 100 records per call, and return the same evidence models
+used by the offline proof. The Linear adapter takes a Linear team ID.
 
-See [.env.example](.env.example) for placeholder configuration values only. Do not put real secrets
-into Git, chat transcripts, or issue comments.
+The intended flow is:
 
-## Current Limitations
+1. Approve a Decision Package.
+2. Put its marker in the Linear issue or GitHub issue/PR body.
+3. Read the provider records with the adapter.
+4. Pass the normalised evidence to `ConformanceEngine`.
+5. Give the resulting digest to the PO.
 
-- The public runnable slice uses synthetic Linear-shaped events, not a public live Linear app.
-- The Alignment Proof does not yet create or update real Linear or GitHub work items.
-- The default advisory provider is deterministic and local; live model quality, latency, and cost
-  are not proven by the default demo.
-- The private Cloud Run smoke test is documented, but not packaged here as a reproducible public
-  environment.
-- Founder approval is strongly modeled in the local proof, but the local synthetic approval flow is
-  not a production-trusted identity system.
-- BuilderAgent and VerifierAgent are part of the operating model, not end-to-end implemented public
-  slices in this repository.
-- The Gmail/email-agent direction is documented, but the email product itself is intentionally not
-  built here yet.
+No provider write scope is needed for this stage.
 
-## What This Project Shows
+## Design in one sentence
 
-For a hiring manager reviewing AI workflow work, this repository shows:
+**AI can help frame the decision; deterministic code guards it; a human remains the authority.**
 
-- product thinking anchored in system boundaries rather than prompt novelty
-- workflow design that separates advisory AI behavior from deterministic operational control
-- clear handling of approvals, versioning, and handoff eligibility
-- practical attention to failure modes such as duplicate events, stale events, and instruction
-  injection
-- a concrete product boundary between PO decisions, agentic work, and delivery evidence
-- disciplined scope management: one narrow working slice, explicit limitations, and documented
-  future phases
+That boundary is the point of the project. The compiler itself does not need a model to prove the
+workflow, which keeps the important checks repeatable and inspectable.
 
-## Repository Guide
+## What this is — and is not
 
-- `src/ai_native_studio/product_agent_proof/`: local ProductAgent proof and demos
-- `src/ai_native_studio/product_agent_live/`: live-service path for one private ProductAgent app
-- `src/ai_native_studio/product_decision_compiler/`: offline decision and conformance proof
-- `products/studio_agents/`: architecture, threat model, implementation plan, and proof README
-- `products/decision_compiler/`: product, architecture, acceptance, evaluation, and threat-model docs
-- `products/email_agent/`: future product documentation for the email-agent direction
-- `docs/milestones/`: milestone evidence
-- `docs/public/`: public-facing writeups
-- `tests/`: automated checks for the proof and live-service layers
+This is an open engineering proof of a product-operations idea. It is not a production release gate,
+an autonomous PM, a chatbot, or a live hosted Linear/GitHub application. Authentication, scheduling,
+pagination beyond the first page, webhook processing, and a durable external store remain follow-on
+work.
+
+## Read the evidence
+
+- [Product Decision Compiler brief](products/decision_compiler/product_brief.md)
+- [Architecture](products/decision_compiler/architecture.md)
+- [Acceptance criteria](products/decision_compiler/acceptance_criteria.yaml)
+- [Evaluation plan](products/decision_compiler/eval_plan.md)
+- [Public product write-up](docs/public/product-decision-compiler.md)
+- [Read-only adapter code](src/ai_native_studio/product_decision_compiler/integrations.py)
+- [Tests](tests/product_decision_compiler/)
+
+The repository also contains the earlier ProductAgent foundation. It is useful context, but the
+Product Decision Compiler is the public centre of gravity.
 
 ## License
 
-This project is released under the [MIT License](LICENSE).
+MIT. Use it, change it, build on it, or sell it. Keep the copyright and license notice with it.

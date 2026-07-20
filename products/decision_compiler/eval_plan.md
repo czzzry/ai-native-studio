@@ -1,6 +1,6 @@
 # Product Decision Compiler Evaluation Plan
 
-Status: DRAFT — VerifierAgent evaluation for the Alignment Proof slice
+Status: DRAFT — VerifierAgent evaluation for the Alignment Proof and read-only adapter slice
 
 ## Evidence Required
 
@@ -10,6 +10,8 @@ Status: DRAFT — VerifierAgent evaluation for the Alignment Proof slice
 - Provenance and decision-version assertions.
 - Security and prompt-injection test results.
 - Negative evidence showing no external calls or release actions.
+- Synthetic Linear and GitHub provider responses mapped to the shared evidence contracts.
+- Evidence that adapter requests are read-only and credentials do not enter URLs or payloads.
 
 ## Core Cases
 
@@ -38,6 +40,7 @@ Status: DRAFT — VerifierAgent evaluation for the Alignment Proof slice
 
 ## Post-Proof Evaluation
 
-After the offline proof, run a small human review with synthetic PO scenarios. Measure whether a PO
-can correctly identify the one item requiring attention without reading the underlying activity log.
-Do not add live integrations until this qualitative test supports the digest concept.
+After the offline proof and adapter demo, run a small human review with synthetic PO scenarios.
+Measure whether a PO can correctly identify the one item requiring attention without reading the
+underlying activity log. Do not add provider writes, webhooks, or hosted synchronisation until this
+qualitative test supports the digest concept.

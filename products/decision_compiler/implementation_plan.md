@@ -1,6 +1,6 @@
 # Product Decision Compiler Implementation Plan
 
-Status: DRAFT — Builder implementation is blocked until Founder approval of the exact specification
+Status: DRAFT — Founder-approved implementation through the read-only adapter slice
 
 ## Phase 0: Approve the Slice
 
@@ -78,13 +78,26 @@ Deliverables after verification:
 - Architecture, threat model, evaluation results, and limitations.
 - LICENSE, CONTRIBUTING, SECURITY, and CI setup.
 - History and repository metadata review for personal information.
-- Separate follow-on proposal for a live Linear or GitHub adapter.
+- Read-only Linear and GitHub adapter code with synthetic provider responses.
 
 Exit condition: Founder approves publication of the verified public slice.
 
+## Phase 7: Read-only Provider Adapters
+
+Deliverables:
+
+- Explicit decision markers for conservative matching of provider records.
+- Linear reads for issues and sub-issues.
+- GitHub reads for issues, pull requests, commits, changed files, and check runs.
+- Normalisation into the existing WorkItemEvidence and DeliveryReport contracts.
+- Tests proving no provider write method is used and stale decision markers remain visible.
+
+Exit condition: a no-network integration demo exercises both adapters and the same conformance
+engine used by the offline proof.
+
 ## Explicitly Not in This Plan
 
-- Live Linear OAuth or webhook setup.
+- Live Linear OAuth, webhooks, and incremental synchronisation.
 - Automatic issue creation in a personal or private workspace.
 - Automatic agent dispatch.
 - Automatic release or merge.

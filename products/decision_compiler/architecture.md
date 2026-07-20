@@ -1,6 +1,6 @@
 # Product Decision Compiler Architecture
 
-Status: DRAFT — implementation design for the Alignment Proof slice
+Status: DRAFT — implementation design for the Alignment Proof and read-only adapter slice
 
 ## Architectural Boundary
 
@@ -31,7 +31,8 @@ PO digest / delivery evidence
 - `conformance.py`: evaluator protocol and stable finding classifications.
 - `delivery_reports.py`: validated implementation evidence input schema.
 - `digest.py`: finding prioritisation and quiet-by-default PO summary.
-- `adapters.py`: provider-neutral event and export protocols; synthetic Linear-shaped adapter first.
+- `integrations.py`: explicit decision markers, read-only Linear/GitHub clients, and normalisation
+  into the provider-neutral evidence contracts.
 - `provenance.py`: links source event, decision version, finding, and digest entry.
 - `fixtures/alignment_proof.v1.json`: deterministic scenarios for aligned work, scope expansion,
   contradiction, missing evidence, amendment, duplicate, stale version, and injection.
@@ -107,12 +108,20 @@ output must be schema-validated, provenance-bound, and unable to approve, amend,
 policy on its own. The default fixtures use deterministic interpretation so the proof remains
 offline and repeatable.
 
+## Implemented Read-only Integrations
+
+- Linear issue and sub-issue reads through the GraphQL API.
+- GitHub issue, pull request, commit, changed-file, and check-run reads through the REST API.
+- Explicit `decision:<decision-id>-v<version>` markers for conservative matching.
+- Stale-version records remain visible to the conformance engine instead of being silently dropped.
+- Injectable JSON transport for deterministic tests and no-network demos.
+
+The adapters have no provider write methods. They cannot create issues, update statuses, add
+comments, apply labels, merge pull requests, or release software.
+
 ## Deferred Integrations
 
-- Live Linear webhook and project/issue reads.
-- GitHub issue, pull request, and changed-file adapter.
+- Live Linear webhooks and incremental synchronisation.
 - Persistent hosted dashboard.
 - Agent task dispatch.
 - Automatic status changes or release decisions.
-
-These are follow-on adapters after the offline proof demonstrates that the digest is useful.

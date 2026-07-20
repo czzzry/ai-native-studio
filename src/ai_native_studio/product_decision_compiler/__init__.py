@@ -9,6 +9,15 @@ from .contracts import (
     DeliveryReport,
     WorkItemEvidence,
 )
+from .integrations import (
+    DecisionBinding,
+    DecisionReference,
+    GitHubReadOnlyAdapter,
+    IntegrationEvidenceBatch,
+    LinearReadOnlyAdapter,
+    ReadOnlyIntegrationError,
+    extract_decision_reference,
+)
 
 __all__ = [
     "ConformanceEngine",
@@ -17,8 +26,15 @@ __all__ = [
     "DecisionPackage",
     "DecisionPackageDraft",
     "DecisionPackageService",
+    "DecisionBinding",
+    "DecisionReference",
     "DeterministicIntentCompiler",
     "DeliveryReport",
+    "GitHubReadOnlyAdapter",
+    "IntegrationEvidenceBatch",
+    "LinearReadOnlyAdapter",
+    "ReadOnlyIntegrationError",
     "WorkItemEvidence",
     "build_digest",
+    "extract_decision_reference",
 ]

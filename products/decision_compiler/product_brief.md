@@ -1,6 +1,6 @@
 # Product Decision Compiler
 
-Status: DRAFT — Founder approval required before implementation
+Status: DRAFT — core slice approved; read-only adapter extension implemented
 
 ## Product Position
 
@@ -51,6 +51,16 @@ The first release will use synthetic Linear-shaped events and local fixtures. It
 
 No live Linear, GitHub, Gmail, paid model, or release action is required for this slice.
 
+## Read-only Integration Extension
+
+The next implementation slice keeps the same decision and conformance core while adding provider
+reads. Linear issues and sub-issues, plus GitHub issues, pull requests, commits, changed files, and
+check runs, are normalised into the existing evidence contracts. Records are linked conservatively
+through an explicit decision marker or a marked pull request.
+
+This extension still performs no provider writes. It does not create tickets, add comments, change
+status, apply labels, merge pull requests, or release software.
+
 ## Core Workflow
 
 ```text
@@ -77,7 +87,7 @@ PO intent → Decision Package → explicit approval → generated work → conf
 - Blocking developers or agents on an unreviewed model opinion.
 - Automatically releasing software.
 - Requiring Linear as the source of truth.
-- Implementing live GitHub and Linear integrations in the first slice.
+- Implementing provider writes, webhooks, or hosted synchronisation in the first release.
 
 ## Success Measures
 

@@ -32,6 +32,21 @@ The demo follows one decision through the complete loop:
 
 The default run makes no Linear, GitHub, Gmail, or model-provider calls.
 
+## The read-only provider boundary
+
+The first external integration slice is now implemented without giving the compiler write access.
+The Linear adapter reads issues and sub-issues. The GitHub adapter reads issues, pull requests,
+commits, changed files, and check runs. Both return the same `WorkItemEvidence` and `DeliveryReport`
+contracts used by the offline proof.
+
+Issues and pull requests must carry an explicit marker such as `decision:onboarding-improvement-v1`.
+GitHub commits may carry their own marker or inherit the link from a marked pull request. A stale
+marker such as `decision:onboarding-improvement-v2` is still collected and reported as stale rather
+than silently ignored. This makes the link visible to the team and keeps matching conservative.
+
+The adapters do not create tickets, update statuses, add comments, apply labels, merge pull requests,
+or release software.
+
 ## What this demonstrates
 
 - Product decisions are durable artifacts, not ephemeral prompts.
@@ -44,8 +59,8 @@ The default run makes no Linear, GitHub, Gmail, or model-provider calls.
 ## What this does not claim
 
 This is not a live Linear application, a GitHub bot, an autonomous product manager, or a production
-release gate. The proof establishes the decision and conformance contract first. Live adapters are a
-follow-on question that should be answered only if product-owner review finds the digest useful.
+release gate. The adapters are read-only Python building blocks; authentication, scheduling, durable
+storage, and provider write actions are intentionally outside this release.
 
 ## Design boundary
 
@@ -58,9 +73,10 @@ scope, authorize implementation, or release software.
 
 ## Next experiment
 
-The next meaningful validation is a small human review using synthetic product scenarios. The test
-is simple: can a PO identify the one item requiring attention without reading the underlying activity
-log? If not, the product should be improved before any live Linear or GitHub integration is added.
+The next meaningful validation is a small read-only trial against one real, non-critical team or
+repository. The test is simple: can a PO identify the one item requiring attention without reading
+the underlying activity log? If not, the digest should be improved before adding provider writes,
+webhooks, or automation.
 
 ## License
 
